@@ -10,7 +10,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: swarmguard <path-to-torrent-file>")
+		fmt.Println("Usage: stratum <path-to-torrent-file>")
 		os.Exit(1)
 	}
 
