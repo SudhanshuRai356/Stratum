@@ -11,8 +11,8 @@ import (
 	"github.com/Kushal-39/Stratum/internal/torrent"
 )
 
-func Announce(t *torrent.Torrent) error {
-	peerID := "-SG0001-123456789012" // 20 bytes, fixed for now
+func Announce(t *torrent.Torrent) ([]Peer, error) {
+	peerID := "-SG0001-123456789012"
 
 	params := url.Values{}
 	params.Add("info_hash", string(t.InfoHash[:]))
@@ -24,48 +24,55 @@ func Announce(t *torrent.Torrent) error {
 	params.Add("compact", "1")
 
 	announceURL := t.Announce + "?" + params.Encode()
-	fmt.Println("Announce URL:", announceURL)
 
 	resp, err := http.Get(announceURL)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	trackerResp, err := bencode.Decode(resp.Body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	respMap := trackerResp.(map[string]interface{})
 	peersVal := respMap["peers"]
 
+	var peers []Peer
+
 	switch p := peersVal.(type) {
 
 	case string:
-		fmt.Println("Compact peers")
-		fmt.Println("Peers blob length:", len(p))
-		fmt.Println("Number of peers:", len(p)/6)
+		// Compact peers: 6 bytes per peer
+		for i := 0; i+6 <= len(p); i += 6 {
+			ip := fmt.Sprintf("%d.%d.%d.%d",
+				p[i], p[i+1], p[i+2], p[i+3],
+			)
+			port := uint16(p[i+4])<<8 | uint16(p[i+5])
+
+			peers = append(peers, Peer{
+				IP:   ip,
+				Port: port,
+			})
+		}
 
 	case []interface{}:
-		fmt.Println("Non-compact peers")
-		fmt.Println("Number of peers:", len(p))
-
-		for i, peer := range p {
-			peerMap := peer.(map[string]interface{})
+		for _, peerVal := range p {
+			peerMap := peerVal.(map[string]interface{})
 			ip := peerMap["ip"].(string)
-			port := peerMap["port"].(int64)
+			port := uint16(peerMap["port"].(int64))
 
-			fmt.Printf("Peer %d: %s:%d\n", i, ip, port)
-
-			if i >= 4 {
-				break
-			}
+			peers = append(peers, Peer{
+				IP:   ip,
+				Port: port,
+			})
 		}
 
 	default:
-		return fmt.Errorf("unknown peers format: %T", peersVal)
+		return nil, fmt.Errorf("unknown peers format: %T", peersVal)
 	}
 
-	return nil
+	return peers, nil
 }
+
