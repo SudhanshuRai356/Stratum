@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
+	"io"
+	"os"
+
 	"github.com/Kushal-39/Stratum/internal/peer"
 	"github.com/Kushal-39/Stratum/internal/torrent"
 	"github.com/Kushal-39/Stratum/internal/tracker"
-	"os"
 )
 
 func main() {
@@ -24,7 +27,7 @@ func main() {
 	fmt.Println("Torrent parsed:", t.Info.Name)
 	fmt.Println("Size:", t.Info.Length)
 
-	peers, err := tracker.Announce(t)  //connecting to the tracker
+	peers, err := tracker.Announce(t) //connecting to the tracker
 	if err != nil {
 		panic(err)
 	}
@@ -33,7 +36,7 @@ func main() {
 		panic("no peers returned by tracker")
 	}
 
-	peerID := generatePeerID()  //generating peer ID
+	peerID := generatePeerID() //generating peer ID
 	handshakeDone := false
 
 	for i := 0; i < len(peers) && i < 10; i++ {
@@ -42,33 +45,67 @@ func main() {
 			Port: peers[i].Port,
 		}
 
-		conn, err := peer.PerformHandshake(p, t.InfoHash, peerID)  //trying to perform handshake with known peers
+		conn, err := peer.PerformHandshake(p, t.InfoHash, peerID) //trying to perform handshake with known peers
 		if err != nil {
 			fmt.Println("Handshake failed with", p.IP, ":", err)
 			continue
 		}
 		fmt.Println("Handshake successful with", p.IP)
 		handshakeDone = true
+		gotBitfield := false
+		gotUnchoke := false
+		requested := false
 
 		for { //listening to peer's state machine
 			msg, err := peer.ReadMessage(conn)
 			if err != nil {
-				fmt.Println("Read error:", err)
+				if err == io.EOF {
+					fmt.Println("Peer closed connection")
+				} else {
+					fmt.Println("Read error:", err)
+				}
 				break
 			}
 
 			switch msg.ID {
-			case 5:
-				fmt.Println("Received bitfield, length:", len(msg.Payload))
 			case 1:
 				fmt.Println("Received unchoke")
+				gotUnchoke = true
 			case 0:
 				fmt.Println("Received choke")
 			case 255:
 				fmt.Println("Received keep-alive")
+			case 4:
+				pieceIndex := binary.BigEndian.Uint32(msg.Payload)
+				fmt.Println("Peer has piece", pieceIndex)
+			case 5:
+				fmt.Println("Received bitfield, length:", len(msg.Payload))
+				gotBitfield = true
+				if err := peer.SendInterested(conn); err != nil {
+					fmt.Println("Failed to send interested:", err)
+				}
+			case 7:
+				piece := binary.BigEndian.Uint32(msg.Payload[0:4])
+				begin := binary.BigEndian.Uint32(msg.Payload[4:8])
+				block := msg.Payload[8:]
+
+				fmt.Println("Received PIECE",
+					"piece:", piece,
+					"begin:", begin,
+					"block length:", len(block))
+
 			default:
 				fmt.Println("Received message ID:", msg.ID)
 			}
+			if gotBitfield && gotUnchoke && !requested {
+				// naive: request piece 0
+				err := peer.SendReq(conn, 0, 0, peer.Blocksize)
+				if err != nil {
+					fmt.Println("Request failed:", err)
+				}
+				requested = true
+			}
+
 		}
 		conn.Close()
 		break
