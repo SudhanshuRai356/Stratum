@@ -42,8 +42,10 @@ func main() {
 	// Step 3: Try to connect to peers and download
 	peerID := generatePeerID()
 	handshakeDone := false
+	totalPieces := int(len(t.Info.Pieces) / 20)
+	completed := make([]bool, totalPieces)
 
-	for i := 0; i < len(peers) && i < 10; i++ {
+	for i := 0; i < len(peers) ; i++ {
 		p := peer.Peer{
 			IP:   peers[i].IP,
 			Port: peers[i].Port,
@@ -60,9 +62,6 @@ func main() {
 
 		// Step 4: Create session and downloader
 		session := peer.NewPeerSession(conn, p, t.InfoHash, peerID)
-
-		pieceIndex := uint32(0)
-
 		// Create storage writer for the output file
 		writer, err := storage.New(t.Info.Name, t.Info.Length)
 		if err != nil {
@@ -71,17 +70,38 @@ func main() {
 		}
 		defer writer.Close()
 
-		downloader := peer.NewDownloader(t, pieceIndex, PipelineDepth, writer)
-
-		// Step 5: Run the session (handles message loop and downloading)
-		err = session.Run(downloader)
+		err = session.Run(
+			totalPieces,
+			completed,
+			func(pieceIndex uint32) *peer.Downloader {
+				return peer.NewDownloader(
+					t,
+					pieceIndex,
+					PipelineDepth,
+					writer,
+				)
+			},
+		)
 		if err != nil {
 			fmt.Println("Session error:", err)
-			continue
 		}
 
-		// Successfully downloaded a piece
-		return
+		allDone := true
+		for _, done := range completed {
+			if !done {
+				allDone = false
+				break
+			}
+		}
+
+		if allDone {
+			fmt.Println("All pieces downloaded")
+			return
+		}
+
+		// otherwise, try next peer
+		continue
+
 	}
 
 	if !handshakeDone {

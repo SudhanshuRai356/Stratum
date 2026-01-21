@@ -8,12 +8,27 @@ import (
 )
 
 type PeerSession struct {
-	Conn     net.Conn // Direct net.Conn - standard Go network interface
-	Peer     Peer     // Peer address info
-	Bitfield []byte   // Which pieces the peer has
-	Choked   bool     // Whether peer is choking us
-	InfoHash [20]byte // Torrent info hash
-	PeerID   [20]byte // Our peer ID
+	Conn       net.Conn // Direct net.Conn - standard Go network interface
+	Peer       Peer     // Peer address info
+	Bitfield   []byte   // Which pieces the peer has
+	Choked     bool     // Whether peer is choking us
+	InfoHash   [20]byte // Torrent info hash
+	PeerID     [20]byte // Our peer ID
+	Downloader *Downloader
+}
+
+func pickNextPiece(bitfield []byte, completed []bool) (uint32, bool) {
+	for i := uint32(0); i < uint32(len(completed)); i++ {
+		if completed[i] {
+			continue
+		}
+		byteIdx := i / 8
+		bitIdx := 7 - (i % 8)
+		if byteIdx < uint32(len(bitfield)) && (bitfield[byteIdx]&(1<<bitIdx)) != 0 {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 func NewPeerSession(conn net.Conn, peer Peer, infoHash [20]byte, peerID [20]byte) *PeerSession {
@@ -26,12 +41,15 @@ func NewPeerSession(conn net.Conn, peer Peer, infoHash [20]byte, peerID [20]byte
 	}
 }
 
-func (s *PeerSession) Run(dl *Downloader) error {
+func (s *PeerSession) Run(
+	torrentPieces int,
+	completed []bool,
+	newDownloader func(pieceIndex uint32) *Downloader,
+) error {
 	defer s.Conn.Close()
 
 	gotBitfield := false
 	gotUnchoke := false
-	requested := false
 
 	for {
 		msg, err := ReadMessage(s.Conn)
@@ -39,7 +57,8 @@ func (s *PeerSession) Run(dl *Downloader) error {
 			if err == io.EOF {
 				return fmt.Errorf("peer closed connection")
 			}
-			return fmt.Errorf("read error: %w", err)
+			fmt.Println("Peer error:", err)
+			return nil // allow main to try next peer
 		}
 
 		switch msg.ID {
@@ -67,15 +86,27 @@ func (s *PeerSession) Run(dl *Downloader) error {
 			}
 
 		case 7: // piece
-			done, err := dl.HandlePiece(msg.Payload, func(offset, length uint32) error {
-				return SendReq(s.Conn, dl.PieceIndex, offset, length)
-			})
+			if s.Downloader == nil {
+				return fmt.Errorf("received PIECE with no active downloader")
+			}
+
+			done, err := s.Downloader.HandlePiece(
+				msg.Payload,
+				func(offset, length uint32) error {
+					return SendReq(s.Conn, s.Downloader.PieceIndex, offset, length)
+				},
+			)
 			if err != nil {
 				return fmt.Errorf("piece handling failed: %w", err)
 			}
+
 			if done {
-				fmt.Println("Download complete")
-				return nil
+				completed[s.Downloader.PieceIndex] = true
+				fmt.Println("Completed piece", s.Downloader.PieceIndex)
+
+				s.Downloader = nil // ready for next piece
+
+				continue
 			}
 
 		case 255: // keep-alive
@@ -85,12 +116,21 @@ func (s *PeerSession) Run(dl *Downloader) error {
 			fmt.Println("Received message ID:", msg.ID)
 		}
 
-		if gotBitfield && gotUnchoke && !requested {
-			dl.StartPipeline(func(offset, length uint32) error {
-				return SendReq(s.Conn, dl.PieceIndex, offset, length)
+		if gotBitfield && gotUnchoke && s.Downloader == nil {
+			pieceIndex, ok := pickNextPiece(s.Bitfield, completed)
+			if !ok {
+				return fmt.Errorf("peer has no usable pieces")
+			}
+
+			s.Downloader = newDownloader(pieceIndex)
+
+			fmt.Println("Starting piece", pieceIndex)
+
+			s.Downloader.StartPipeline(func(offset, length uint32) error {
+				return SendReq(s.Conn, pieceIndex, offset, length)
 			})
-			requested = true
 		}
+
 	}
 }
 
