@@ -1,19 +1,19 @@
 package peer
 
 import (
-"encoding/binary"
-"fmt"
-"io"
-"net"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"net"
 )
 
 type PeerSession struct {
-	Conn     net.Conn  // Direct net.Conn - standard Go network interface
-	Peer     Peer      // Peer address info
-	Bitfield []byte    // Which pieces the peer has
-	Choked   bool      // Whether peer is choking us
-	InfoHash [20]byte  // Torrent info hash
-	PeerID   [20]byte  // Our peer ID
+	Conn     net.Conn // Direct net.Conn - standard Go network interface
+	Peer     Peer     // Peer address info
+	Bitfield []byte   // Which pieces the peer has
+	Choked   bool     // Whether peer is choking us
+	InfoHash [20]byte // Torrent info hash
+	PeerID   [20]byte // Our peer ID
 }
 
 func NewPeerSession(conn net.Conn, peer Peer, infoHash [20]byte, peerID [20]byte) *PeerSession {
@@ -67,7 +67,9 @@ func (s *PeerSession) Run(dl *Downloader) error {
 			}
 
 		case 7: // piece
-			done, err := dl.HandlePiece(s.Conn, msg.Payload)
+			done, err := dl.HandlePiece(msg.Payload, func(offset, length uint32) error {
+				return SendReq(s.Conn, dl.PieceIndex, offset, length)
+			})
 			if err != nil {
 				return fmt.Errorf("piece handling failed: %w", err)
 			}
@@ -84,7 +86,9 @@ func (s *PeerSession) Run(dl *Downloader) error {
 		}
 
 		if gotBitfield && gotUnchoke && !requested {
-			dl.StartPipeline(s.Conn)
+			dl.StartPipeline(func(offset, length uint32) error {
+				return SendReq(s.Conn, dl.PieceIndex, offset, length)
+			})
 			requested = true
 		}
 	}

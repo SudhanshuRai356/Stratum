@@ -1,12 +1,13 @@
 package main
 
 import (
-"fmt"
-"os"
+	"fmt"
+	"os"
 
-"github.com/Kushal-39/Stratum/internal/peer"
-"github.com/Kushal-39/Stratum/internal/torrent"
-"github.com/Kushal-39/Stratum/internal/tracker"
+	"github.com/Kushal-39/Stratum/internal/peer"
+	"github.com/Kushal-39/Stratum/internal/storage"
+	"github.com/Kushal-39/Stratum/internal/torrent"
+	"github.com/Kushal-39/Stratum/internal/tracker"
 )
 
 const PipelineDepth = 5
@@ -61,10 +62,16 @@ func main() {
 		session := peer.NewPeerSession(conn, p, t.InfoHash, peerID)
 
 		pieceIndex := uint32(0)
-		pieceLength := uint32(t.Info.PieceLength)
-		pieceHashes := []byte(t.Info.Pieces)
 
-		downloader := peer.NewDownloader(pieceIndex, pieceLength, pieceHashes, PipelineDepth)
+		// Create storage writer for the output file
+		writer, err := storage.New(t.Info.Name, t.Info.Length)
+		if err != nil {
+			fmt.Println("Failed to create writer:", err)
+			continue
+		}
+		defer writer.Close()
+
+		downloader := peer.NewDownloader(t, pieceIndex, PipelineDepth, writer)
 
 		// Step 5: Run the session (handles message loop and downloading)
 		err = session.Run(downloader)

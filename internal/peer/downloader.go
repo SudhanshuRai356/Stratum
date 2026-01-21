@@ -1,125 +1,126 @@
 package peer
 
 import (
-"encoding/binary"
-"fmt"
-"net"
+	"encoding/binary"
+	"fmt"
+
+	"github.com/Kushal-39/Stratum/internal/storage"
+	"github.com/Kushal-39/Stratum/internal/torrent"
 )
 
 const DefaultPipelineDepth = 5
 
 type Downloader struct {
-	PieceIndex    uint32           // Current piece being downloaded
-	PieceLength   uint32           // Length of the piece
-	PieceHashes   []byte           // All piece hashes (20 bytes each)
-	Assembler     *PieceAssembler  // Assembles blocks into complete piece
-	NextOffset    uint32           // Next block offset to request
-	Inflight      uint32           // Number of requests in flight
-	PipelineDepth int              // Max concurrent requests
+	PieceIndex    uint32
+	Torrent       *torrent.Torrent
+	Assembler     *PieceAssembler
+	NextOffset    uint32
+	Inflight      uint32
+	PipelineDepth int
+	Writer        *storage.Writer
 }
 
-func NewDownloader(pieceIndex, pieceLength uint32, pieceHashes []byte, pipelineDepth int) *Downloader {
+func NewDownloader(
+	t *torrent.Torrent,
+	pieceIndex uint32,
+	pipelineDepth int,
+	w *storage.Writer,
+) *Downloader {
+
 	if pipelineDepth <= 0 {
 		pipelineDepth = DefaultPipelineDepth
 	}
 
 	return &Downloader{
 		PieceIndex:    pieceIndex,
-		PieceLength:   pieceLength,
-		PieceHashes:   pieceHashes,
-		Assembler:     NewPieceAssembler(pieceIndex, pieceLength, Blocksize),
+		Torrent:       t,
+		Assembler:     NewPieceAssembler(pieceIndex, uint32(t.Info.PieceLength), Blocksize),
 		PipelineDepth: pipelineDepth,
+		Writer:        w,
 	}
 }
 
-func (d *Downloader) StartPipeline(conn net.Conn) {
+// StartPipeline sends the initial burst of requests
+func (d *Downloader) StartPipeline(
+	request func(offset, length uint32) error,
+) error {
+
 	for i := 0; i < d.PipelineDepth && d.NextOffset < d.Assembler.Length; i++ {
-		blockSize := uint32(Blocksize)
-		if d.NextOffset+blockSize > d.Assembler.Length {
-			blockSize = d.Assembler.Length - d.NextOffset
+		if err := d.sendNext(request); err != nil {
+			return err
 		}
-
-		err := SendReq(conn, d.PieceIndex, d.NextOffset, blockSize)
-		if err != nil {
-			fmt.Println("Request failed:", err)
-			continue
-		}
-		d.NextOffset += blockSize
-		d.Inflight++
 	}
+	return nil
 }
 
-// HandlePiece processes an incoming PIECE message.
-func (d *Downloader) HandlePiece(conn net.Conn, payload []byte) (bool, error) {
+// HandlePiece processes a PIECE message payload
+func (d *Downloader) HandlePiece(
+	payload []byte,
+	request func(offset, length uint32) error,
+) (bool, error) {
+
 	if len(payload) < 8 {
 		return false, fmt.Errorf("piece payload too short")
 	}
 
-	pieceIdx := binary.BigEndian.Uint32(payload[0:4])
+	piece := binary.BigEndian.Uint32(payload[0:4])
 	begin := binary.BigEndian.Uint32(payload[4:8])
 	block := payload[8:]
 
-	fmt.Println(
-"Received PIECE",
-"piece:", pieceIdx,
-"begin:", begin,
-"block length:", len(block),
-)
+	if piece != d.PieceIndex {
+		return false, fmt.Errorf("unexpected piece index %d", piece)
+	}
 
-	// Verify this is the piece we're downloading
-if pieceIdx != d.PieceIndex {
-return false, fmt.Errorf("unexpected piece index: got %d, want %d", pieceIdx, d.PieceIndex)
+	if err := d.Assembler.AddBlock(begin, block); err != nil {
+		return false, err
+	}
+
+	d.Inflight--
+
+	// keep pipeline full
+	if d.NextOffset < d.Assembler.Length {
+		if err := d.sendNext(request); err != nil {
+			return false, err
+		}
+	}
+
+	if d.Assembler.Received == d.Assembler.Length {
+		fmt.Println("Piece fully downloaded")
+
+		expected := []byte(d.Torrent.Info.Pieces[d.PieceIndex*20 : (d.PieceIndex+1)*20])
+
+		if d.Assembler.Verify(expected) {
+			offset := int64(d.PieceIndex) * int64(d.Torrent.Info.PieceLength)
+
+			if err := d.Writer.WriteAt(offset, d.Assembler.Data); err != nil {
+				return false, err
+			}
+
+			fmt.Println("Piece written to disk")
+			return true, nil
+		}
+
+		return false, fmt.Errorf("piece hash mismatch")
+	}
+
+	return false, nil
 }
 
-if err := d.Assembler.AddBlock(begin, block); err != nil {
-return false, fmt.Errorf("AddBlock failed: %w", err)
-}
+// sendNext issues the next block request
+func (d *Downloader) sendNext(
+	request func(offset, length uint32) error,
+) error {
 
-d.Inflight--
+	blockSize := uint32(Blocksize)
+	if d.NextOffset+blockSize > d.Assembler.Length {
+		blockSize = d.Assembler.Length - d.NextOffset
+	}
 
-if d.NextOffset < d.Assembler.Length {
-blockSize := uint32(Blocksize)
-if d.NextOffset+blockSize > d.Assembler.Length {
-blockSize = d.Assembler.Length - d.NextOffset
-}
+	if err := request(d.NextOffset, blockSize); err != nil {
+		return err
+	}
 
-if err := SendReq(conn, d.PieceIndex, d.NextOffset, blockSize); err != nil {
-fmt.Println("Request failed:", err)
-} else {
-d.NextOffset += blockSize
-d.Inflight++
-}
-}
-
-// Check if piece is complete
-if d.Assembler.Received == d.Assembler.Length {
-fmt.Println("Piece fully downloaded")
-
-expectedHash := d.getExpectedHash()
-if d.Assembler.Verify(expectedHash) {
-fmt.Println("Piece hash VERIFIED")
-return true, nil
-} else {
-return false, fmt.Errorf("piece hash MISMATCH")
-}
-}
-
-return false, nil
-}
-
-func (d *Downloader) getExpectedHash() []byte {
-start := d.PieceIndex * 20
-end := start + 20
-if int(end) > len(d.PieceHashes) {
-return nil
-}
-return d.PieceHashes[start:end]
-}
-
-func (d *Downloader) GetData() []byte {
-return d.Assembler.Data
-}
-
-func (d *Downloader) IsComplete() bool {
-return d.Assembler.Received == d.Assembler.Length
+	d.NextOffset += blockSize
+	d.Inflight++
+	return nil
 }
