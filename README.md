@@ -11,3 +11,11 @@ go run ./cmd/stratum <your .torrent file>
 ```
 
 it should start downloading the torrent in the main directory if the peers are healthy lol
+
+to see the realtime update of the file you are downloading
+
+run this command as is in a separate terminal :3
+
+```
+  watch -n 1 du -h <file name>
+```
