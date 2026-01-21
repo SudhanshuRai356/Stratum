@@ -23,7 +23,12 @@ func Announce(t *torrent.Torrent) ([]Peer, error) {
 	params.Add("left", strconv.FormatInt(t.Info.Length, 10))
 	params.Add("compact", "1")
 
-	announceURL := t.Announce + "?" + params.Encode()
+	announce := t.GetAnnounceURL()
+	if announce == "" {
+		return nil, fmt.Errorf("no usable HTTP tracker found")
+	}
+
+	announceURL := announce + "?" + params.Encode()
 
 	resp, err := http.Get(announceURL)
 	if err != nil {
@@ -44,7 +49,6 @@ func Announce(t *torrent.Torrent) ([]Peer, error) {
 	switch p := peersVal.(type) {
 
 	case string:
-		// Compact peers: 6 bytes per peer
 		for i := 0; i+6 <= len(p); i += 6 {
 			ip := fmt.Sprintf("%d.%d.%d.%d",
 				p[i], p[i+1], p[i+2], p[i+3],
@@ -75,4 +79,3 @@ func Announce(t *torrent.Torrent) ([]Peer, error) {
 
 	return peers, nil
 }
-

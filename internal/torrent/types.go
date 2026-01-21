@@ -9,6 +9,7 @@ type Info struct {
 
 type Torrent struct {
 	Announce string
+	AnnounceList [][]string 
 	Info     Info
 	InfoHash [20]byte
 }

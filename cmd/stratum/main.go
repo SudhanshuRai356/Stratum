@@ -11,6 +11,8 @@ import (
 	"github.com/Kushal-39/Stratum/internal/tracker"
 )
 
+const PipelineDepth = 5
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: stratum <path-to-torrent-file>")
@@ -52,9 +54,18 @@ func main() {
 		}
 		fmt.Println("Handshake successful with", p.IP)
 		handshakeDone = true
-		gotBitfield := false
 		gotUnchoke := false
 		requested := false
+
+		var bitfield []byte
+		haveAny := false
+		totalPieces := uint32(len(t.Info.Pieces) / 20)
+		var (
+			pieceIndex uint32
+			assembler  *peer.PieceAssembler
+			nextOffset uint32
+			inflight   uint32
+		)
 
 		for { //listening to peer's state machine
 			msg, err := peer.ReadMessage(conn)
@@ -75,40 +86,121 @@ func main() {
 				fmt.Println("Received choke")
 			case 255:
 				fmt.Println("Received keep-alive")
-			case 4:
-				pieceIndex := binary.BigEndian.Uint32(msg.Payload)
-				fmt.Println("Peer has piece", pieceIndex)
-			case 5:
+			case 4: // HAVE
+				piece := binary.BigEndian.Uint32(msg.Payload)
+				haveAny = true
+
+				if bitfield == nil {
+					bitfield = make([]byte, (totalPieces+7)/8)
+				}
+
+				byteIndex := piece / 8
+				bitIndex := 7 - (piece % 8)
+				bitfield[byteIndex] |= 1 << bitIndex
+
+			case 5: // bitfield
 				fmt.Println("Received bitfield, length:", len(msg.Payload))
-				gotBitfield = true
+				bitfield = msg.Payload
+				haveAny=true
+
 				if err := peer.SendInterested(conn); err != nil {
 					fmt.Println("Failed to send interested:", err)
 				}
-			case 7:
-				piece := binary.BigEndian.Uint32(msg.Payload[0:4])
+
+			case 7: // PIECE
+				p := binary.BigEndian.Uint32(msg.Payload[0:4])
 				begin := binary.BigEndian.Uint32(msg.Payload[4:8])
 				block := msg.Payload[8:]
 
-				fmt.Println("Received PIECE",
-					"piece:", piece,
+				fmt.Println(
+					"Received PIECE",
+					"piece:", p,
 					"begin:", begin,
-					"block length:", len(block))
+					"block length:", len(block),
+				)
+
+				// add block to assembler
+				err := assembler.AddBlock(begin, block)
+				if err != nil {
+					fmt.Println("AddBlock failed:", err)
+					break
+				}
+
+				// one request fulfilled
+				inflight--
+
+				// send next request if piece not complete
+				if nextOffset < assembler.Length {
+					blockSize := uint32(peer.Blocksize)
+					if nextOffset+blockSize > assembler.Length {
+						blockSize = assembler.Length - nextOffset
+					}
+
+					err := peer.SendReq(conn, pieceIndex, nextOffset, blockSize)
+					if err != nil {
+						fmt.Println("Request failed:", err)
+					} else {
+						nextOffset += blockSize
+						inflight++
+					}
+				}
+				if assembler.Received == assembler.Length {
+					fmt.Println("Piece fully downloaded")
+
+					expected := []byte(
+						t.Info.Pieces[pieceIndex*20 : (pieceIndex+1)*20],
+					)
+
+					if assembler.Verify(expected) {
+						fmt.Println("Piece hash VERIFIED")
+					} else {
+						fmt.Println("Piece hash MISMATCH")
+					}
+
+					return
+				}
 
 			default:
 				fmt.Println("Received message ID:", msg.ID)
 			}
-			if gotBitfield && gotUnchoke && !requested {
-				// naive: request piece 0
-				err := peer.SendReq(conn, 0, 0, peer.Blocksize)
-				if err != nil {
-					fmt.Println("Request failed:", err)
+			if gotUnchoke && !requested && haveAny {
+				picked, ok := peer.PickPiece(bitfield, totalPieces)
+				if !ok {
+					fmt.Println("Peer advertised pieces but none usable")
+					break
 				}
+
+				pieceIndex = picked
+				fmt.Println("Selected piece:", pieceIndex)
+
+				pieceLength := uint32(t.Info.PieceLength)
+				assembler = peer.NewPieceAssembler(pieceIndex, pieceLength, peer.Blocksize)
+
+				nextOffset = 0
+				inflight = 0
+
+				for i := 0; i < PipelineDepth && nextOffset < assembler.Length; i++ {
+					blockSize := uint32(peer.Blocksize)
+					if nextOffset+blockSize > assembler.Length {
+						blockSize = assembler.Length - nextOffset
+					}
+
+					err := peer.SendReq(conn, pieceIndex, nextOffset, blockSize)
+					if err != nil {
+						fmt.Println("Request failed:", err)
+						break
+					}
+
+					nextOffset += blockSize
+					inflight++
+				}
+
 				requested = true
 			}
 
 		}
 		conn.Close()
-		break
+		continue
 
 	}
 
