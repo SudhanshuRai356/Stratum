@@ -12,6 +12,15 @@ import (
 
 const PipelineDepth = 5
 
+func allPiecesDone(completed []bool) bool {
+	for _, done := range completed {
+		if !done {
+			return false
+		}
+	}
+	return true
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: stratum <path-to-torrent-file>")
@@ -45,67 +54,61 @@ func main() {
 	totalPieces := int(len(t.Info.Pieces) / 20)
 	completed := make([]bool, totalPieces)
 
-	for i := 0; i < len(peers) ; i++ {
-		p := peer.Peer{
-			IP:   peers[i].IP,
-			Port: peers[i].Port,
-		}
-
-		// Perform handshake using net.Conn
-		conn, err := peer.PerformHandshake(p, t.InfoHash, peerID)
-		if err != nil {
-			fmt.Println("Handshake failed with", p.IP, ":", err)
-			continue
-		}
-		fmt.Println("Handshake successful with", p.IP)
-		handshakeDone = true
-
-		// Step 4: Create session and downloader
-		session := peer.NewPeerSession(conn, p, t.InfoHash, peerID)
-		// Create storage writer for the output file
-		writer, err := storage.New(t.Info.Name, t.Info.Length)
-		if err != nil {
-			fmt.Println("Failed to create writer:", err)
-			continue
-		}
-		defer writer.Close()
-
-		err = session.Run(
-			totalPieces,
-			completed,
-			func(pieceIndex uint32) *peer.Downloader {
-				return peer.NewDownloader(
-					t,
-					pieceIndex,
-					PipelineDepth,
-					writer,
-				)
-			},
-		)
-		if err != nil {
-			fmt.Println("Session error:", err)
-		}
-
-		allDone := true
-		for _, done := range completed {
-			if !done {
-				allDone = false
-				break
+	for !allPiecesDone(completed) {
+		for i := 0; i < len(peers); i++ {
+			p := peer.Peer{
+				IP:   peers[i].IP,
+				Port: peers[i].Port,
 			}
+
+			// Perform handshake using net.Conn
+			conn, err := peer.PerformHandshake(p, t.InfoHash, peerID)
+			if err != nil {
+				fmt.Println("Handshake failed with", p.IP, ":", err)
+				continue
+			}
+			fmt.Println("Handshake successful with", p.IP)
+			handshakeDone = true
+
+			// Step 4: Create session and downloader
+			session := peer.NewPeerSession(conn, p, t.InfoHash, peerID)
+			// Create storage writer for the output file
+			writer, err := storage.New(t.Info.Name, t.Info.Length)
+			if err != nil {
+				fmt.Println("Failed to create writer:", err)
+				continue
+			}
+			defer writer.Close()
+
+			err = session.Run(
+				totalPieces,
+				completed,
+				func(pieceIndex uint32) *peer.Downloader {
+					return peer.NewDownloader(
+						t,
+						pieceIndex,
+						PipelineDepth,
+						writer,
+					)
+				},
+			)
+			if err != nil {
+				fmt.Println("Session error:", err)
+			}
+
+			if allPiecesDone(completed) {
+				fmt.Println("All pieces downloaded")
+				return
+			}
+
+			// otherwise, try next peer
+			continue
+
 		}
 
-		if allDone {
-			fmt.Println("All pieces downloaded")
-			return
+		if !handshakeDone {
+			fmt.Println("No successful handshakes")
 		}
-
-		// otherwise, try next peer
-		continue
-
-	}
-
-	if !handshakeDone {
-		fmt.Println("No successful handshakes")
 	}
 }
 
