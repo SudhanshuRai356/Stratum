@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	bencode "github.com/jackpal/bencode-go"
 
@@ -23,13 +24,47 @@ func Announce(t *torrent.Torrent) ([]Peer, error) {
 	params.Add("left", strconv.FormatInt(t.Info.Length, 10))
 	params.Add("compact", "1")
 
-	announce := t.GetAnnounceURL()
-	if announce == "" {
-		return nil, fmt.Errorf("no usable HTTP tracker found")
+	announceURLs := t.GetAllAnnounceURLs()
+	if len(announceURLs) == 0 {
+		return nil, fmt.Errorf("no trackers in torrent")
+	}
+	var lastErr error
+
+	for _, announce := range announceURLs {
+		fmt.Println("Trying tracker:", announce)
+
+		var peers []Peer
+		var err error
+
+		if strings.HasPrefix(announce, "udp://") {
+			peers, err = AnnounceUDP(announce, t)
+		} else if strings.HasPrefix(announce, "http://") || strings.HasPrefix(announce, "https://") {
+			announceURL := announce + "?" + params.Encode()
+			peers, err = announceHTTP(announceURL)
+		} else {
+			continue
+		}
+
+		if err != nil {
+			fmt.Println("Tracker failed:", err)
+			lastErr = err
+			continue
+		}
+
+		if len(peers) == 0 {
+			fmt.Println("Tracker returned no peers")
+			continue
+		}
+
+		fmt.Println("Tracker succeeded:", announce)
+		return peers, nil
 	}
 
-	announceURL := announce + "?" + params.Encode()
+	return nil, fmt.Errorf("all trackers failed: %v", lastErr)
 
+}
+
+func announceHTTP(announceURL string) ([]Peer, error) {
 	resp, err := http.Get(announceURL)
 	if err != nil {
 		return nil, err
@@ -47,7 +82,6 @@ func Announce(t *torrent.Torrent) ([]Peer, error) {
 	var peers []Peer
 
 	switch p := peersVal.(type) {
-
 	case string:
 		for i := 0; i+6 <= len(p); i += 6 {
 			ip := fmt.Sprintf("%d.%d.%d.%d",
