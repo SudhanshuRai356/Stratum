@@ -2,17 +2,22 @@ package torrent
 
 import "strings"
 
-func (t *Torrent) GetAnnounceURL() string {
+func (t *Torrent) GetAllAnnounceURLs() []string {
+	var urls []string
+
 	if t.Announce != "" {
-		return t.Announce
+		urls = append(urls, t.Announce)
 	}
 
 	for _, tier := range t.AnnounceList {
-		for _, url := range tier {
-			if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
-				return url
+		for _, u := range tier {
+			if strings.HasPrefix(u, "http://") ||
+				strings.HasPrefix(u, "https://") ||
+				strings.HasPrefix(u, "udp://") {
+				urls = append(urls, u)
 			}
 		}
 	}
-	return ""
+
+	return urls
 }
