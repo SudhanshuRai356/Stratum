@@ -1,13 +1,14 @@
 package main
 
 import (
+	"flag"
 	"fmt"
-	"os"
-
 	"github.com/Kushal-39/Stratum/internal/peer"
 	"github.com/Kushal-39/Stratum/internal/storage"
 	"github.com/Kushal-39/Stratum/internal/torrent"
 	"github.com/Kushal-39/Stratum/internal/tracker"
+	"os"
+	"path/filepath"
 )
 
 const PipelineDepth = 5
@@ -22,12 +23,15 @@ func allPiecesDone(completed []bool) bool {
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: stratum <path-to-torrent-file>")
+	outDir := flag.String("o", ".", "output directory")
+	flag.Parse()
+
+	if flag.NArg() < 1 {
+		fmt.Println("Usage: stratum [-o output_dir] <path-to-torrent-file>")
 		os.Exit(1)
 	}
 
-	torrentPath := os.Args[1]
+	torrentPath := flag.Arg(0)
 
 	// Step 1: Parse the torrent file
 	t, err := torrent.ParseTorrent(torrentPath)
@@ -37,6 +41,12 @@ func main() {
 
 	fmt.Println("Torrent parsed:", t.Info.Name)
 	fmt.Println("Size:", t.Info.Length)
+	absOutDir, err := filepath.Abs(*outDir)
+	if err != nil {
+		panic(err)
+	}
+
+	outputPath := filepath.Join(absOutDir, t.Info.Name)
 
 	// Step 2: Get peers from tracker
 	peers, err := tracker.Announce(t)
@@ -53,6 +63,12 @@ func main() {
 	handshakeDone := false
 	totalPieces := int(len(t.Info.Pieces) / 20)
 	completed := make([]bool, totalPieces)
+
+	writer, err := storage.New(outputPath, t.Info.Length) //create a writer to write the downloaded things to the disk
+	if err != nil {
+		panic(err)
+	}
+	defer writer.Close()
 
 	for !allPiecesDone(completed) {
 		for i := 0; i < len(peers); i++ {
@@ -72,13 +88,6 @@ func main() {
 
 			// Step 4: Create session and downloader
 			session := peer.NewPeerSession(conn, p, t.InfoHash, peerID)
-			// Create storage writer for the output file
-			writer, err := storage.New(t.Info.Name, t.Info.Length)
-			if err != nil {
-				fmt.Println("Failed to create writer:", err)
-				continue
-			}
-			defer writer.Close()
 
 			err = session.Run(
 				totalPieces,
