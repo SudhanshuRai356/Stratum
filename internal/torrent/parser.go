@@ -12,7 +12,13 @@ type rawInfo struct {
 	Name        string `bencode:"name"`
 	PieceLength int    `bencode:"piece length"`
 	Pieces      string `bencode:"pieces"`
-	Length      int64  `bencode:"length"`
+
+	Length int64 `bencode:"length"`
+
+	Files []struct {
+		Length int64    `bencode:"length"`
+		Path   []string `bencode:"path"`
+	} `bencode:"files"`
 }
 
 type rawTorrent struct {
@@ -52,15 +58,30 @@ func ParseTorrent(path string) (*Torrent, error) {
 	}
 	infoHash := sha1.Sum(buf.Bytes())
 
+	var totalLength int64
+
+	// single-file torrent
+	if rt.Info.Length > 0 {
+		totalLength = rt.Info.Length
+	}
+
+	// multi-file torrent
+	if len(rt.Info.Files) > 0 {
+		for _, f := range rt.Info.Files {
+			totalLength += f.Length
+		}
+	}
+
 	t := &Torrent{
 		Announce: rt.Announce,
 		Info: Info{
 			Name:        rt.Info.Name,
 			PieceLength: rt.Info.PieceLength,
 			Pieces:      rt.Info.Pieces,
-			Length:      rt.Info.Length,
+			Length:      totalLength,
 		},
 		InfoHash: infoHash,
 	}
+
 	return t, nil
 }
