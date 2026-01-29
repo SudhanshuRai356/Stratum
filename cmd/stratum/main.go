@@ -9,6 +9,7 @@ import (
 	"github.com/Kushal-39/Stratum/internal/tracker"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 const PipelineDepth = 5
@@ -60,7 +61,6 @@ func main() {
 
 	// Step 3: Try to connect to peers and download
 	peerID := generatePeerID()
-	handshakeDone := false
 	totalPieces := int(len(t.Info.Pieces) / 20)
 	completed := make([]bool, totalPieces)
 
@@ -71,6 +71,14 @@ func main() {
 	defer writer.Close()
 
 	for !allPiecesDone(completed) {
+		handshakeDone := false
+		if len(peers) == 0 {
+			fmt.Println("No peers, re-announcing...")
+			peers, _ = tracker.Announce(t)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
 		for i := 0; i < len(peers); i++ {
 			p := peer.Peer{
 				IP:   peers[i].IP,
@@ -117,7 +125,9 @@ func main() {
 
 		if !handshakeDone {
 			fmt.Println("No successful handshakes")
+			time.Sleep(5 * time.Second)
 		}
+		time.Sleep(2 * time.Second)
 	}
 }
 

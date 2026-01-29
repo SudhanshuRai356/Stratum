@@ -104,9 +104,20 @@ func (s *PeerSession) Run(
 				completed[s.Downloader.PieceIndex] = true
 				fmt.Println("Completed piece", s.Downloader.PieceIndex)
 
-				s.Downloader = nil // ready for next piece
+				// Pick next piece from SAME peer
+				nextPiece, ok := pickNextPiece(s.Bitfield, completed)
+				if !ok {
+					fmt.Println("Peer has no more useful pieces")
+					return nil // now we exit session
+				}
 
-				continue
+				s.Downloader = newDownloader(nextPiece)
+
+				fmt.Println("Starting piece", nextPiece)
+
+				s.Downloader.StartPipeline(func(offset, length uint32) error {
+					return SendReq(s.Conn, nextPiece, offset, length)
+				})
 			}
 
 		case 255: // keep-alive
