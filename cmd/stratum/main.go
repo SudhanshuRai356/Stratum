@@ -60,6 +60,7 @@ type PieceManager struct { //struct to manage the concurrency in peers
 	totalPieces       int
 	mu                sync.Mutex
 	pieceAvailability []int
+	completedCount    int
 }
 
 func NewPieceManager(totalPieces int) *PieceManager {
@@ -70,11 +71,21 @@ func NewPieceManager(totalPieces int) *PieceManager {
 		done_chain:        make(chan uint32, totalPieces),
 		totalPieces:       totalPieces,
 		pieceAvailability: make([]int, totalPieces),
+		completedCount:    0,
 	}
-	// for i:=0;i<totalPieces;i++{
-	// 	pm.piece_chain <- uint32(i)
-	// }
 	return pm
+}
+
+func (pm *PieceManager) allDone() bool {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	return pm.completedCount >= pm.totalPieces
+}
+
+func (pm *PieceManager) remainingPieces() int {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	return pm.totalPieces - pm.completedCount
 }
 func downloadPiece(session *peer.PeerSession, pidx uint32, tor *torrent.Torrent, writer *storage.Writer) error {
 	temp_Comp := make([]bool, len(tor.Info.Pieces)/20)
@@ -133,7 +144,10 @@ func (pm *PieceManager) pick_rarest_piece(peer_bitfield []byte) (uint32, bool) {
 func (pm *PieceManager) mark_piece_completed(pidx uint32) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
-	pm.completed[pidx] = true
+	if !pm.completed[pidx] {
+		pm.completed[pidx] = true
+		pm.completedCount++
+	}
 	pm.in_progress[pidx] = false
 }
 func (pm *PieceManager) mark_piece_failed(pidx uint32) {
@@ -141,7 +155,9 @@ func (pm *PieceManager) mark_piece_failed(pidx uint32) {
 	defer pm.mu.Unlock()
 	pm.in_progress[pidx] = false
 }
-func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *storage.Writer) {
+func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *storage.Writer, wg *sync.WaitGroup) {
+	defer wg.Done()
+
 	pid := generatePeerID()
 	p := peer.Peer{
 		IP:   pe.IP,
@@ -152,66 +168,41 @@ func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *sto
 		fmt.Println("Handshake failed with the peer", p.IP, "due to error ", e)
 		return
 	}
+	defer con.Close() // Worker owns the connection lifecycle
+
 	session := peer.NewPeerSession(con, p, tor.InfoHash, pid)
-	for session.Bitfield == nil {
-		time.Sleep(10 * time.Millisecond) // wait for bitfield
+
+	// Wait for bitfield and unchoke - this actually reads messages from the peer
+	if err := session.WaitForReady(); err != nil {
+		fmt.Printf("Worker %s: Failed to get ready state: %v\n", p.IP, err)
+		return
 	}
+
 	pm.update_avail(session.Bitfield)
 
-	for {
+	for !pm.allDone() {
 		piece_index, available := pm.pick_rarest_piece(session.Bitfield)
 		if !available {
-			fmt.Printf("Worker %s: No more pieces available\n", p.IP)
+			fmt.Printf("Worker %s: No more pieces available from this peer\n", p.IP)
 			return
 		}
 		fmt.Printf("Worker %s downloading rarest piece %d\n", p.IP, piece_index)
 
 		e2 := downloadPiece(session, piece_index, tor, writer)
 		if e2 != nil {
-			fmt.Printf("Error downloading piece %d: %v\n", piece_index, e2)
+			fmt.Printf("Error downloading piece %d from %s: %v\n", piece_index, p.IP, e2)
 			pm.mark_piece_failed(piece_index) // mark for retry
-			continue
+			return                            // Exit worker on error, main loop will retry with new peers
 		} else {
 			pm.mark_piece_completed(piece_index)
-			pm.done_chain <- piece_index
+			fmt.Printf("Completed piece %d (%d/%d)\n", piece_index, pm.completedCount, pm.totalPieces)
 		}
 	}
 }
 
 const PipelineDepth = 5
+const ReannounceInterval = 30 * time.Second
 
-func (pm *PieceManager) StartCompletionHandler() {
-	comp_count := 0
-	for pidx := range pm.done_chain {
-		pm.mu.Lock()
-		pm.completed[pidx] = true
-		comp_count++
-		pm.mu.Unlock()
-		fmt.Println("completed", comp_count, "picese out of", pm.totalPieces)
-		if comp_count == pm.totalPieces {
-			fmt.Println("done all the pieces")
-			close(pm.piece_chain)
-			return
-		}
-	}
-}
-func (pm *PieceManager) waitForCompletion() {
-	for {
-		pm.mu.Lock()
-		done := true
-		for _, d := range pm.completed {
-			if !d {
-				done = false
-				break
-			}
-		}
-		pm.mu.Unlock()
-		if done {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
 func allPiecesDone(completed []bool) bool {
 	for _, done := range completed {
 		if !done {
@@ -327,13 +318,59 @@ func main() {
 	// 	}
 	// 	time.Sleep(2 * time.Second)
 	// }
-	//commented out but not yet removed the download all from single peer code and adding the concurrency code
+	// Main download loop - keeps retrying peers until ALL pieces are downloaded
+	// PieceManager persists across all rounds - completed[] and completedCount are NEVER reset
 	pm := NewPieceManager(totalPieces)
-	for _, pe := range peers {
-		go worker(pe, pm, t, writer)
+	roundNum := 0
+
+	for !pm.allDone() {
+		roundNum++
+		fmt.Printf("\n=== Round %d: Remaining pieces: %d/%d ===\n", roundNum, pm.remainingPieces(), totalPieces)
+
+		// Always announce at the start of each round to get fresh peers
+		fmt.Println("Announcing to tracker...")
+		peers, err = tracker.Announce(t)
+		if err != nil {
+			fmt.Printf("Tracker announce failed: %v. Retrying in 10 seconds...\n", err)
+			time.Sleep(10 * time.Second)
+			continue // Retry the loop, do NOT exit
+		}
+
+		if len(peers) == 0 {
+			fmt.Println("No peers returned by tracker. Retrying in 10 seconds...")
+			time.Sleep(10 * time.Second)
+			continue // Retry the loop, do NOT exit
+		}
+
+		fmt.Printf("Got %d peers from tracker\n", len(peers))
+
+		// Start workers for all available peers
+		var wg sync.WaitGroup
+		for _, pe := range peers {
+			wg.Add(1)
+			go worker(pe, pm, t, writer, &wg)
+		}
+
+		// Wait for all workers to finish this round
+		// Worker exit does NOT end the program - we just wait and loop again
+		wg.Wait()
+
+		// Log round completion
+		fmt.Printf("\nRound %d finished. Completed: %d/%d pieces\n", roundNum, pm.totalPieces-pm.remainingPieces(), pm.totalPieces)
+
+		// Check termination condition - ONLY exit when ALL pieces are done
+		if pm.allDone() {
+			break
+		}
+
+		// Not done - log and continue to next round
+		fmt.Println("Round finished, retrying peers...")
+
+		// Brief pause before next round to avoid hammering tracker/peers
+		time.Sleep(2 * time.Second)
 	}
-	pm.StartCompletionHandler()
-	//pm.waitForCompletion()
+
+	fmt.Println("\n=== All pieces downloaded successfully! ===")
 }
 
 func generatePeerID() [20]byte {

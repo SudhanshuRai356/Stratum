@@ -41,6 +41,46 @@ func NewPeerSession(conn net.Conn, peer Peer, infoHash [20]byte, peerID [20]byte
 	}
 }
 
+// WaitForReady reads messages until we have bitfield and unchoke.
+// This must be called before downloading pieces.
+func (s *PeerSession) WaitForReady() error {
+	for s.Bitfield == nil || s.Choked {
+		msg, err := ReadMessage(s.Conn)
+		if err != nil {
+			if err == io.EOF {
+				return fmt.Errorf("peer closed connection before ready")
+			}
+			return fmt.Errorf("error reading message: %w", err)
+		}
+
+		switch msg.ID {
+		case 0: // choke
+			s.Choked = true
+			fmt.Println("Received choke")
+		case 1: // unchoke
+			s.Choked = false
+			fmt.Println("Received unchoke")
+		case 4: // have
+			pieceIndex := binary.BigEndian.Uint32(msg.Payload)
+			s.updateBitfield(pieceIndex)
+		case 5: // bitfield
+			s.Bitfield = msg.Payload
+			fmt.Println("Received bitfield, length:", len(msg.Payload))
+			// Send INTERESTED immediately after receiving bitfield
+			if err := SendInterested(s.Conn); err != nil {
+				return fmt.Errorf("failed to send interested: %w", err)
+			}
+			fmt.Println("Sent INTERESTED")
+		case 255: // keep-alive
+			// ignore
+		default:
+			fmt.Println("WaitForReady: ignoring message ID:", msg.ID)
+		}
+	}
+	fmt.Println("Peer is ready (have bitfield + unchoked)")
+	return nil
+}
+
 func (s *PeerSession) Run(
 	torrentPieces int,
 	completed []bool,
@@ -175,38 +215,41 @@ func (s *PeerSession) HasPiece(pieceIndex uint32) bool {
 	return (s.Bitfield[byteIndex]>>bitIndex)&1 == 1
 }
 func (s *PeerSession) RunSinglePiece(pidx uint32, comp []bool, new_downloader func(pieceIndex uint32) *Downloader) error {
-	defer s.Conn.Close()
-	bitfield := false
-	unchoke := false
+	// NOTE: Connection is NOT closed here - caller manages connection lifecycle
+	// Check if peer has this piece
+	if !s.HasPiece(pidx) {
+		return fmt.Errorf("peer doesn't have piece %d", pidx)
+	}
+
+	// Start the downloader for this piece
+	s.Downloader = new_downloader(pidx)
+	fmt.Println("Starting piece", pidx)
+	s.Downloader.StartPipeline(func(offset, length uint32) error {
+		return SendReq(s.Conn, pidx, offset, length)
+	})
+
+	// Read messages until piece is complete
 	for {
 		msg, e := ReadMessage(s.Conn)
 		if e != nil {
 			if e == io.EOF {
 				return fmt.Errorf("peer closed connection")
 			}
-			fmt.Println("Peer error:", e)
-			return nil // allow main to try next peer
+			return fmt.Errorf("peer error: %w", e)
 		}
 		switch msg.ID {
-		case 0: //choke
+		case 0: // choke
 			s.Choked = true
-			fmt.Println("Received choke")
-		case 1: //unchoke
+			fmt.Println("Received choke during download")
+			return fmt.Errorf("peer choked us during download")
+		case 1: // unchoke
 			s.Choked = false
-			unchoke = true
-			fmt.Println("Received unchoke")
-		case 4: //have
+		case 4: // have
 			pieceIndex := binary.BigEndian.Uint32(msg.Payload)
 			s.updateBitfield(pieceIndex)
-			fmt.Println("Peer has piece", pieceIndex)
-		case 5: //bitfield
+		case 5: // bitfield
 			s.Bitfield = msg.Payload
-			bitfield = true
-			fmt.Println("Received bitfield, length:", len(msg.Payload))
-			if e := SendInterested(s.Conn); e != nil {
-				return fmt.Errorf("failed to send interested: %w", e)
-			}
-		case 7: //piece
+		case 7: // piece
 			if s.Downloader == nil {
 				return fmt.Errorf("received PIECE with no active downloader")
 			}
@@ -218,24 +261,13 @@ func (s *PeerSession) RunSinglePiece(pidx uint32, comp []bool, new_downloader fu
 			}
 			if done {
 				comp[s.Downloader.PieceIndex] = true
-				//fmt.Println("Completed piece", s.Downloader.PieceIndex) //use for debugging output
+				s.Downloader = nil // Clear downloader for next piece
 				return nil
 			}
-
-		case 255: //keep-alive
-			fmt.Println("Received keep-alive")
+		case 255: // keep-alive
+			// ignore
 		default:
-			fmt.Println("Received message ID:", msg.ID)
-		}
-		if bitfield && unchoke && s.Downloader == nil {
-			if !s.HasPiece(pidx) {
-				return fmt.Errorf("peer doesn't have piece %d", pidx)
-			}
-			s.Downloader = new_downloader(pidx)
-			fmt.Println("Starting piece", pidx)
-			s.Downloader.StartPipeline(func(offset, length uint32) error {
-				return SendReq(s.Conn, pidx, offset, length)
-			})
+			fmt.Println("RunSinglePiece: received message ID:", msg.ID)
 		}
 	}
 }
