@@ -174,3 +174,68 @@ func (s *PeerSession) HasPiece(pieceIndex uint32) bool {
 
 	return (s.Bitfield[byteIndex]>>bitIndex)&1 == 1
 }
+func (s *PeerSession) RunSinglePiece(pidx uint32, comp []bool, new_downloader func(pieceIndex uint32) *Downloader) error {
+	defer s.Conn.Close()
+	bitfield := false
+	unchoke := false
+	for {
+		msg, e := ReadMessage(s.Conn)
+		if e != nil {
+			if e == io.EOF {
+				return fmt.Errorf("peer closed connection")
+			}
+			fmt.Println("Peer error:", e)
+			return nil // allow main to try next peer
+		}
+		switch msg.ID {
+		case 0: //choke
+			s.Choked = true
+			fmt.Println("Received choke")
+		case 1: //unchoke
+			s.Choked = false
+			unchoke = true
+			fmt.Println("Received unchoke")
+		case 4: //have
+			pieceIndex := binary.BigEndian.Uint32(msg.Payload)
+			s.updateBitfield(pieceIndex)
+			fmt.Println("Peer has piece", pieceIndex)
+		case 5: //bitfield
+			s.Bitfield = msg.Payload
+			bitfield = true
+			fmt.Println("Received bitfield, length:", len(msg.Payload))
+			if e := SendInterested(s.Conn); e != nil {
+				return fmt.Errorf("failed to send interested: %w", e)
+			}
+		case 7: //piece
+			if s.Downloader == nil {
+				return fmt.Errorf("received PIECE with no active downloader")
+			}
+			done, e := s.Downloader.HandlePiece(msg.Payload, func(offset, length uint32) error {
+				return SendReq(s.Conn, s.Downloader.PieceIndex, offset, length)
+			})
+			if e != nil {
+				return fmt.Errorf("failed to handle piece: %w", e)
+			}
+			if done {
+				comp[s.Downloader.PieceIndex] = true
+				//fmt.Println("Completed piece", s.Downloader.PieceIndex) //use for debugging output
+				return nil
+			}
+
+		case 255: //keep-alive
+			fmt.Println("Received keep-alive")
+		default:
+			fmt.Println("Received message ID:", msg.ID)
+		}
+		if bitfield && unchoke && s.Downloader == nil {
+			if !s.HasPiece(pidx) {
+				return fmt.Errorf("peer doesn't have piece %d", pidx)
+			}
+			s.Downloader = new_downloader(pidx)
+			fmt.Println("Starting piece", pidx)
+			s.Downloader.StartPipeline(func(offset, length uint32) error {
+				return SendReq(s.Conn, pidx, offset, length)
+			})
+		}
+	}
+}
