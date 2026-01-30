@@ -1,39 +1,83 @@
 package main
 
 import (
+	"container/heap"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
+	"sync"
+
 	"github.com/Kushal-39/Stratum/internal/peer"
 	"github.com/Kushal-39/Stratum/internal/storage"
 	"github.com/Kushal-39/Stratum/internal/torrent"
 	"github.com/Kushal-39/Stratum/internal/tracker"
-	"sync"
 )
-type PieceManager struct{ //struct to manage the concurrency in peers
-	completed []bool
-	done_chain chan uint32
-	piece_chain chan uint32 // channel will be used to avoid the race condition of multiple peers send the same piece
-	totalPieces int
-	mu sync.Mutex
+
+func HasPiece(bitfield []byte, pieceIndex uint32) bool {
+	if len(bitfield) == 0 {
+		return false
+	}
+	byteIndex := pieceIndex / 8
+	bitIndex := pieceIndex % 8
+	if byteIndex >= uint32(len(bitfield)) {
+		return false
+	}
+	return (bitfield[byteIndex] & (1 << (7 - bitIndex))) != 0
 }
-func NewPieceManager(totalPieces int) *PieceManager{
+
+type piece_item struct {
+	piece_index        uint32
+	availability_count int
+}
+type piece_priority_queue []*piece_item
+
+func (pq piece_priority_queue) Len() int { return len(pq) }
+func (pq piece_priority_queue) Less(i, j int) bool {
+	return pq[i].availability_count < pq[j].availability_count // min-heap for rarest first
+}
+func (pq piece_priority_queue) Swap(i, j int) {
+	pq[i], pq[j] = pq[j], pq[i]
+}
+func (pq *piece_priority_queue) Push(x interface{}) {
+	*pq = append(*pq, x.(*piece_item))
+}
+func (pq *piece_priority_queue) Pop() interface{} {
+	old := *pq
+	n := len(old)
+	item := old[n-1]
+	*pq = old[0 : n-1]
+	return item
+}
+
+type PieceManager struct { //struct to manage the concurrency in peers
+	completed         []bool
+	in_progress       []bool
+	done_chain        chan uint32
+	piece_chain       chan uint32 // channel will be used to avoid the race condition of multiple peers send the same piece
+	totalPieces       int
+	mu                sync.Mutex
+	pieceAvailability []int
+}
+
+func NewPieceManager(totalPieces int) *PieceManager {
 	pm := &PieceManager{
-		completed: make([]bool,totalPieces),
-		piece_chain: make(chan uint32,totalPieces),
-		done_chain: make(chan uint32,totalPieces),
-		totalPieces: totalPieces,
+		completed:         make([]bool, totalPieces),
+		in_progress:       make([]bool, totalPieces),
+		piece_chain:       make(chan uint32, totalPieces),
+		done_chain:        make(chan uint32, totalPieces),
+		totalPieces:       totalPieces,
+		pieceAvailability: make([]int, totalPieces),
 	}
-	for i:=0;i<totalPieces;i++{
-		pm.piece_chain <- uint32(i)
-	}
+	// for i:=0;i<totalPieces;i++{
+	// 	pm.piece_chain <- uint32(i)
+	// }
 	return pm
 }
-func downloadPiece(session *peer.PeerSession, pidx uint32,tor *torrent.Torrent, writer *storage.Writer) error{
-	temp_Comp := make([]bool,len(tor.Info.Pieces)/20)
+func downloadPiece(session *peer.PeerSession, pidx uint32, tor *torrent.Torrent, writer *storage.Writer) error {
+	temp_Comp := make([]bool, len(tor.Info.Pieces)/20)
 	err := session.RunSinglePiece(pidx, temp_Comp, func(pid uint32) *peer.Downloader {
 		return peer.NewDownloader(
 			tor,
@@ -44,71 +88,125 @@ func downloadPiece(session *peer.PeerSession, pidx uint32,tor *torrent.Torrent, 
 	})
 	return err
 }
-func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *storage.Writer){
-	pid:=generatePeerID()
-	p:=peer.Peer{
-		IP:pe.IP,
-		Port:pe.Port,
-	}
-	con,e := peer.PerformHandshake(p,tor.InfoHash, pid)
-	if e != nil{
-		fmt.Println("Handshake failed with the peer",p.IP,"due to error ",e)
-		return
-	}
-	session := peer.NewPeerSession(con, p, tor.InfoHash, pid)
-	for {
-		select{
-			case pieceIndex,ok := <- pm.piece_chain:
-				if !ok{
-					fmt.Printf("Worker %s: piece chain closed\n", p.IP)
-					return
-				}
-				e2:=downloadPiece(session, pieceIndex, tor, writer)
-				if e2 != nil {
-					fmt.Println("Error downloading piece", pieceIndex, ":", e2)
-					select{
-					case pm.piece_chain <- pieceIndex:
-					default:
-						//nothing to see here bhai
-					}
-					continue
-				}else{
-				pm.done_chain <- pieceIndex
-				}
-			default:
-				fmt.Printf("Worker %s is done no more pieces left on it\n", p.IP)
-            	return
+func (pm *PieceManager) update_avail(bitfield []byte) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	for pidx := 0; pidx < pm.totalPieces; pidx++ {
+		if HasPiece(bitfield, uint32(pidx)) {
+			pm.pieceAvailability[pidx]++
 		}
 	}
 }
+func (pm *PieceManager) update_piece_avail(pidx uint32) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	if pidx < uint32(pm.totalPieces) {
+		pm.pieceAvailability[pidx]++
+	}
+}
+func (pm *PieceManager) pick_rarest_piece(peer_bitfield []byte) (uint32, bool) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pq := &piece_priority_queue{}
+	heap.Init(pq)
+	for pidx := 0; pidx < pm.totalPieces; pidx++ {
+		if pm.completed[pidx] || pm.in_progress[pidx] {
+			continue
+		}
+		if !HasPiece(peer_bitfield, uint32(pidx)) {
+			continue
+		}
+		item := &piece_item{
+			piece_index:        uint32(pidx),
+			availability_count: pm.pieceAvailability[pidx],
+		}
+		heap.Push(pq, item)
+	}
+	if pq.Len() == 0 {
+		return 0, false
+	}
+	rarest_item := heap.Pop(pq).(*piece_item)
+	pm.in_progress[rarest_item.piece_index] = true
+	return rarest_item.piece_index, true
+}
+func (pm *PieceManager) mark_piece_completed(pidx uint32) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.completed[pidx] = true
+	pm.in_progress[pidx] = false
+}
+func (pm *PieceManager) mark_piece_failed(pidx uint32) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.in_progress[pidx] = false
+}
+func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *storage.Writer) {
+	pid := generatePeerID()
+	p := peer.Peer{
+		IP:   pe.IP,
+		Port: pe.Port,
+	}
+	con, e := peer.PerformHandshake(p, tor.InfoHash, pid)
+	if e != nil {
+		fmt.Println("Handshake failed with the peer", p.IP, "due to error ", e)
+		return
+	}
+	session := peer.NewPeerSession(con, p, tor.InfoHash, pid)
+	for session.Bitfield == nil {
+		time.Sleep(10 * time.Millisecond) // wait for bitfield
+	}
+	pm.update_avail(session.Bitfield)
+
+	for {
+		piece_index, available := pm.pick_rarest_piece(session.Bitfield)
+		if !available {
+			fmt.Printf("Worker %s: No more pieces available\n", p.IP)
+			return
+		}
+		fmt.Printf("Worker %s downloading rarest piece %d\n", p.IP, piece_index)
+
+		e2 := downloadPiece(session, piece_index, tor, writer)
+		if e2 != nil {
+			fmt.Printf("Error downloading piece %d: %v\n", piece_index, e2)
+			pm.mark_piece_failed(piece_index) // mark for retry
+			continue
+		} else {
+			pm.mark_piece_completed(piece_index)
+			pm.done_chain <- piece_index
+		}
+	}
+}
+
 const PipelineDepth = 5
-func (pm *PieceManager) StartCompletionHandler(){
-	comp_count:=0
-	for pidx:= range pm.done_chain{
+
+func (pm *PieceManager) StartCompletionHandler() {
+	comp_count := 0
+	for pidx := range pm.done_chain {
 		pm.mu.Lock()
 		pm.completed[pidx] = true
 		comp_count++
 		pm.mu.Unlock()
-		fmt.Println("completed", comp_count,"picese out of",pm.totalPieces)
-		if comp_count == pm.totalPieces{
+		fmt.Println("completed", comp_count, "picese out of", pm.totalPieces)
+		if comp_count == pm.totalPieces {
 			fmt.Println("done all the pieces")
 			close(pm.piece_chain)
 			return
 		}
 	}
 }
-func (pm *PieceManager) waitForCompletion(){
-	for{
+func (pm *PieceManager) waitForCompletion() {
+	for {
 		pm.mu.Lock()
-		done :=true
-		for _,d:=range pm.completed{
-			if !d{
+		done := true
+		for _, d := range pm.completed {
+			if !d {
 				done = false
 				break
 			}
 		}
 		pm.mu.Unlock()
-		if done{
+		if done {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -231,7 +329,7 @@ func main() {
 	// }
 	//commented out but not yet removed the download all from single peer code and adding the concurrency code
 	pm := NewPieceManager(totalPieces)
-	for _,pe := range peers{
+	for _, pe := range peers {
 		go worker(pe, pm, t, writer)
 	}
 	pm.StartCompletionHandler()
