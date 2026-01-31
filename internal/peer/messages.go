@@ -5,6 +5,25 @@ import (
 	"io"
 )
 
+const (
+	MsgChoke         = 0
+	MsgUnchoke       = 1
+	MsgInterested    = 2
+	MsgNotInterested = 3
+	MsgHave          = 4
+	MsgBitfield      = 5
+	MsgRequest       = 6
+	MsgPiece         = 7
+	MsgCancel        = 8
+	// BEP 10 Extension Protocol
+	MsgExtended      = 20
+)
+
+// ExtendedHandshakePayload is the bencoded dictionary for the handshake
+type ExtendedHandshakePayload struct {
+	M map[string]int `bencode:"m"` // Supported extensions
+}
+
 type Message struct{
 	ID byte
 	Payload []byte

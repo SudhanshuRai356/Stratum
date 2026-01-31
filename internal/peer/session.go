@@ -8,13 +8,14 @@ import (
 )
 
 type PeerSession struct {
-	Conn       net.Conn // Direct net.Conn - standard Go network interface
-	Peer       Peer     // Peer address info
-	Bitfield   []byte   // Which pieces the peer has
-	Choked     bool     // Whether peer is choking us
-	InfoHash   [20]byte // Torrent info hash
-	PeerID     [20]byte // Our peer ID
-	Downloader *Downloader
+	Conn               net.Conn // Direct net.Conn - standard Go network interface
+	Peer               Peer     // Peer address info
+	Bitfield           []byte   // Which pieces the peer has
+	Choked             bool     // Whether peer is choking us
+	InfoHash           [20]byte // Torrent info hash
+	PeerID             [20]byte // Our peer ID
+	Downloader         *Downloader
+	SupportsExtensions bool
 }
 
 func pickNextPiece(bitfield []byte, completed []bool) (uint32, bool) {
@@ -31,13 +32,21 @@ func pickNextPiece(bitfield []byte, completed []bool) (uint32, bool) {
 	return 0, false
 }
 
-func NewPeerSession(conn net.Conn, peer Peer, infoHash [20]byte, peerID [20]byte) *PeerSession {
+// Now accepts peerReserved []byte as the last argument
+func NewPeerSession(conn net.Conn, peer Peer, infoHash [20]byte, peerID [20]byte, peerReserved []byte) *PeerSession {
+	// Check byte 5, bit 0x10 (20th bit from right) for extension support
+	supportsExt := false
+	if len(peerReserved) == 8 && (peerReserved[5]&0x10) != 0 {
+		supportsExt = true
+	}
+
 	return &PeerSession{
-		Conn:     conn,
-		Peer:     peer,
-		Choked:   true, // Start as choked (default BitTorrent state)
-		InfoHash: infoHash,
-		PeerID:   peerID,
+		Conn:               conn,
+		Peer:               peer,
+		Choked:             true,
+		InfoHash:           infoHash,
+		PeerID:             peerID,
+		SupportsExtensions: supportsExt, // Store this flag
 	}
 }
 
@@ -71,6 +80,8 @@ func (s *PeerSession) WaitForReady() error {
 				return fmt.Errorf("failed to send interested: %w", err)
 			}
 			fmt.Println("Sent INTERESTED")
+		case MsgExtended:
+			fmt.Println("Received Extended Message (Handshake or Payload)")
 		case 255: // keep-alive
 			// ignore
 		default:

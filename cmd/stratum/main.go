@@ -163,14 +163,17 @@ func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *sto
 		IP:   pe.IP,
 		Port: pe.Port,
 	}
-	con, e := peer.PerformHandshake(p, tor.InfoHash, pid)
+	// 1. Capture the reserved bytes
+	con, reserved, e := peer.PerformHandshake(p, tor.InfoHash, pid)
 	if e != nil {
-		fmt.Println("Handshake failed with the peer", p.IP, "due to error ", e)
+		// Log less aggressively for timeouts, but keep it for errors
+		// fmt.Println("Handshake failed with the peer", p.IP, "due to error ", e)
 		return
 	}
 	defer con.Close() // Worker owns the connection lifecycle
 
-	session := peer.NewPeerSession(con, p, tor.InfoHash, pid)
+	// 2. Pass the reserved bytes to the session
+	session := peer.NewPeerSession(con, p, tor.InfoHash, pid, reserved)
 
 	// Wait for bitfield and unchoke - this actually reads messages from the peer
 	if err := session.WaitForReady(); err != nil {
@@ -259,67 +262,6 @@ func main() {
 	}
 	defer writer.Close()
 
-	// for !allPiecesDone(completed) {
-	// 	handshakeDone := false
-	// 	if len(peers) == 0 {
-	// 		fmt.Println("No peers, re-announcing...")
-	// 		peers, _ = tracker.Announce(t)
-	// 		time.Sleep(5 * time.Second)
-	// 		continue
-	// 	}
-
-	// 	for i := 0; i < len(peers); i++ {
-	// 		p := peer.Peer{
-	// 			IP:   peers[i].IP,
-	// 			Port: peers[i].Port,
-	// 		}
-
-	// 		// Perform handshake using net.Conn
-	// 		conn, err := peer.PerformHandshake(p, t.InfoHash, peerID)
-	// 		if err != nil {
-	// 			fmt.Println("Handshake failed with", p.IP, ":", err)
-	// 			continue
-	// 		}
-	// 		fmt.Println("Handshake successful with", p.IP)
-	// 		handshakeDone = true
-
-	// 		// Step 4: Create session and downloader
-	// 		session := peer.NewPeerSession(conn, p, t.InfoHash, peerID)
-
-	// 		err = session.Run(
-	// 			totalPieces,
-	// 			completed,
-	// 			func(pieceIndex uint32) *peer.Downloader {
-	// 				return peer.NewDownloader(
-	// 					t,
-	// 					pieceIndex,
-	// 					PipelineDepth,
-	// 					writer,
-	// 				)
-	// 			},
-	// 		)
-	// 		if err != nil {
-	// 			fmt.Println("Session error:", err)
-	// 		}
-
-	// 		if allPiecesDone(completed) {
-	// 			fmt.Println("All pieces downloaded")
-	// 			return
-	// 		}
-
-	// 		// otherwise, try next peer
-	// 		continue
-
-	// 	}
-
-	// 	if !handshakeDone {
-	// 		fmt.Println("No successful handshakes")
-	// 		time.Sleep(5 * time.Second)
-	// 	}
-	// 	time.Sleep(2 * time.Second)
-	// }
-	// Main download loop - keeps retrying peers until ALL pieces are downloaded
-	// PieceManager persists across all rounds - completed[] and completedCount are NEVER reset
 	pm := NewPieceManager(totalPieces)
 	roundNum := 0
 
