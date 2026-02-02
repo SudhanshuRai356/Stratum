@@ -24,6 +24,21 @@ type ExtendedHandshakePayload struct {
 	M map[string]int `bencode:"m"` // Supported extensions
 }
 
+// Metadata message types for BEP 09
+const (
+	MetadataRequest = 0
+	MetadataData    = 1
+	MetadataReject  = 2
+)
+
+// MetadataMessage represents a ut_metadata message
+type MetadataMessage struct {
+	MsgType int `bencode:"msg_type"`
+	Piece   int `bencode:"piece"`
+	// TotalSize only present in data messages
+	TotalSize int `bencode:"total_size,omitempty"`
+}
+
 type Message struct{
 	ID byte
 	Payload []byte

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"sync"
@@ -220,16 +221,27 @@ func main() {
 	flag.Parse()
 
 	if flag.NArg() < 1 {
-		fmt.Println("Usage: stratum [-o output_dir] <path-to-torrent-file>")
+		fmt.Println("Usage: stratum [-o output_dir] <path-to-torrent-file-or-magnet-link>")
 		os.Exit(1)
 	}
 
-	torrentPath := flag.Arg(0)
+	input := flag.Arg(0)
+	var t *torrent.Torrent
+	var err error
 
-	// Step 1: Parse the torrent file
-	t, err := torrent.ParseTorrent(torrentPath)
-	if err != nil {
-		panic(err)
+	// Detect if input is magnet link or torrent file
+	if strings.HasPrefix(input, "magnet:") {
+		fmt.Println("Detected magnet link, fetching metadata...")
+		t, err = handleMagnetLink(input)
+		if err != nil {
+			panic(fmt.Sprintf("Failed to get metadata from magnet link: %v", err))
+		}
+	} else {
+		// Parse torrent file
+		t, err = torrent.ParseTorrent(input)
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	fmt.Println("Torrent parsed:", t.Info.Name)
@@ -313,6 +325,106 @@ func main() {
 	}
 
 	fmt.Println("\n=== All pieces downloaded successfully! ===")
+}
+
+// handleMagnetLink processes a magnet link to get torrent metadata
+func handleMagnetLink(magnetURI string) (*torrent.Torrent, error) {
+	// Parse magnet link
+	magnet, err := torrent.Parse_Mag_URL(magnetURI)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse magnet link: %w", err)
+	}
+
+	fmt.Printf("Parsed magnet link: %s\n", magnet.Name)
+	fmt.Printf("InfoHash: %x\n", magnet.Info_hash)
+	fmt.Printf("Trackers: %d\n", len(magnet.Trackers))
+
+	// Convert InfoHash to [20]byte
+	var infoHash [20]byte
+	copy(infoHash[:], magnet.Info_hash)
+
+	// Try to get peers from trackers to fetch metadata
+	// Create a temporary torrent structure just for getting peers
+	tempTorrent := &torrent.Torrent{
+		InfoHash: infoHash,
+	}
+	
+	if len(magnet.Trackers) > 0 {
+		tempTorrent.Announce = magnet.Trackers[0]
+		tempTorrent.AnnounceList = make([][]string, len(magnet.Trackers))
+		for i, tr := range magnet.Trackers {
+			tempTorrent.AnnounceList[i] = []string{tr}
+		}
+	}
+
+	// Get peers from tracker
+	peers, err := tracker.Announce(tempTorrent)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get peers from tracker: %w", err)
+	}
+
+	if len(peers) == 0 {
+		return nil, fmt.Errorf("no peers available for metadata exchange")
+	}
+
+	fmt.Printf("Found %d peers for metadata exchange\n", len(peers))
+
+	// Try to fetch metadata from peers
+	for i, pe := range peers {
+		fmt.Printf("Attempting metadata exchange with peer %d/%d (%s:%d)\n", i+1, len(peers), pe.IP, pe.Port)
+		
+		// Convert tracker.Peer to peer.Peer
+		p := peer.Peer{
+			IP:   pe.IP,
+			Port: pe.Port,
+		}
+
+		// Establish connection with handshake
+		peerID := generatePeerID()
+		conn, reserved, err := peer.PerformHandshake(p, infoHash, peerID)
+		if err != nil {
+			fmt.Printf("Failed to handshake with peer: %v\n", err)
+			continue
+		}
+
+		// Create session
+		session := peer.NewPeerSession(conn, p, infoHash, peerID, reserved)
+
+		// Wait for handshake and extension support
+		if err := session.WaitForReady(); err != nil {
+			fmt.Printf("Peer not ready: %v\n", err)
+			conn.Close()
+			continue
+		}
+
+		// Check if extensions are supported
+		if !session.SupportsExtensions {
+			fmt.Printf("Peer does not support extensions\n")
+			conn.Close()
+			continue
+		}
+
+		// Fetch metadata
+		metadata, err := session.FetchMetadata(infoHash)
+		conn.Close()
+
+		if err != nil {
+			fmt.Printf("Failed to fetch metadata: %v\n", err)
+			continue
+		}
+
+		fmt.Println("Successfully fetched metadata!")
+
+		// Reconstruct torrent from metadata
+		t, err := torrent.ReconstructTorrentFromMetadata(magnet, metadata)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reconstruct torrent: %w", err)
+		}
+
+		return t, nil
+	}
+
+	return nil, fmt.Errorf("failed to fetch metadata from any peer")
 }
 
 func generatePeerID() [20]byte {
