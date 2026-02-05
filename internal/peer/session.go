@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	bencode "github.com/jackpal/bencode-go"
 	"io"
 	"net"
-
-	"github.com/zeebo/bencode"
+	"time"
 )
 
 type PeerSession struct {
@@ -19,7 +19,7 @@ type PeerSession struct {
 	PeerID             [20]byte // Our peer ID
 	Downloader         *Downloader
 	SupportsExtensions bool
-	ExtensionIDs map[string]int
+	ExtensionIDs       map[string]int
 }
 
 func pickNextPiece(bitfield []byte, completed []bool) (uint32, bool) {
@@ -38,52 +38,60 @@ func pickNextPiece(bitfield []byte, completed []bool) (uint32, bool) {
 
 // Now accepts peerReserved []byte as the last argument
 func NewPeerSession(conn net.Conn, peer Peer, infoHash [20]byte, peerID [20]byte, peerReserved []byte) *PeerSession {
-	// Check byte 5, bit 0x10 (20th bit from right) for extension support
+	conn.SetDeadline(time.Time{})
+
 	supportsExt := false
 	if len(peerReserved) == 8 && (peerReserved[5]&0x10) != 0 {
 		supportsExt = true
 	}
 
-	return &PeerSession{
+	s := &PeerSession{
 		Conn:               conn,
 		Peer:               peer,
 		Choked:             true,
 		InfoHash:           infoHash,
 		PeerID:             peerID,
-		SupportsExtensions: supportsExt, // Store this flag
-		ExtensionIDs: 	 make(map[string]int),
+		SupportsExtensions: supportsExt,
+		ExtensionIDs:       make(map[string]int),
 	}
+
+	if s.SupportsExtensions {
+		SendExtHandshake(s.Conn, true)
+	}
+
+	return s
 }
 func send_Message(conn net.Conn, msgID byte, payload []byte) error {
-	leng:=uint32(1+len(payload))
-	buf:=make([]byte, 4)
+	leng := uint32(1 + len(payload))
+	buf := make([]byte, 4)
 	binary.BigEndian.PutUint32(buf, leng)
-	_,e1:=conn.Write(buf)
-	if e1!=nil{
+	_, e1 := conn.Write(buf)
+	if e1 != nil {
 		return e1
 	}
-	_,e2:=conn.Write([]byte{msgID})
-	if e2!=nil{
+	_, e2 := conn.Write([]byte{msgID})
+	if e2 != nil {
 		return e2
 	}
-	_,e3:=conn.Write(payload)
+	_, e3 := conn.Write(payload)
 	return e3
 }
 func SendExtHandshake(conn net.Conn, supportsExtensions bool) error {
-	ext_map:=map[string]int{
+	ext_map := map[string]int{
 		"ut_metadata": 1,
 	}
-	ext_handshake:=map[string]interface{}{
+	ext_handshake := map[string]interface{}{
 		"m": ext_map,
 	}
 	var buf bytes.Buffer
-	err:=bencode.NewEncoder(&buf).Encode(ext_handshake)
-	if err!=nil{
+	err := bencode.Marshal(&buf, ext_handshake)
+	if err != nil {
 		return err
 	}
-	payload:=append([]byte{0}, buf.Bytes()...)
+	payload := append([]byte{0}, buf.Bytes()...)
 	return send_Message(conn, MsgExtended, payload)
 }
+
 // WaitForReady reads messages until we have bitfield and unchoke.
 // This must be called before downloading pieces.
 func (s *PeerSession) WaitForReady() error {
@@ -115,24 +123,18 @@ func (s *PeerSession) WaitForReady() error {
 			}
 			fmt.Println("Sent INTERESTED")
 		case MsgExtended:
-			if len(msg.Payload) > 0 && msg.Payload[0] == 0{
-				err:=SendExtHandshake(s.Conn, s.SupportsExtensions)
-				if err != nil {
-					return fmt.Errorf("failed to send extended handshake: %w", err)
-				}
-				var extHandshake map[string]interface{}
-				e2:=bencode.DecodeBytes(msg.Payload[1:], &extHandshake)
+			if len(msg.Payload) > 0 && msg.Payload[0] == 0 {
+				// Use the struct we defined in messages.go
+				var payload ExtendedHandshakePayload
+				e2 := bencode.Unmarshal(bytes.NewReader(msg.Payload[1:]), &payload)
 				if e2 != nil {
 					return fmt.Errorf("failed to decode extended message: %w", e2)
 				}
-				if mfield, ok := extHandshake["m"]; ok{
-					if ext,ok:=mfield.(map[string]interface{}); ok {
-						for k,v:=range ext{
-							if id,ok:=v.(int64);ok{
-								s.ExtensionIDs[k]=int(id)
-							}
-						}
-					}
+
+				// Extract ut_metadata ID directly from the typed map
+				if id, ok := payload.M["ut_metadata"]; ok {
+					s.ExtensionIDs["ut_metadata"] = id
+					// Optional: fmt.Printf("Peer supports ut_metadata with ID %d\n", id)
 				}
 			}
 		case 255: // keep-alive
@@ -328,6 +330,9 @@ func (s *PeerSession) RunSinglePiece(pidx uint32, comp []bool, new_downloader fu
 				s.Downloader = nil // Clear downloader for next piece
 				return nil
 			}
+		case MsgExtended:
+			// We are busy downloading; just ignore extension messages (like PEX or metadata requests)
+			// Consuming them here prevents them from hitting 'default'
 		case 255: // keep-alive
 			// ignore
 		default:
@@ -338,21 +343,26 @@ func (s *PeerSession) RunSinglePiece(pidx uint32, comp []bool, new_downloader fu
 
 // FetchMetadata fetches torrent metadata using BEP 09 ut_metadata protocol
 func (s *PeerSession) FetchMetadata(infoHash [20]byte) ([]byte, error) {
-	// Check if peer supports ut_metadata
-	metadataExtID, hasMetadata := s.ExtensionIDs["ut_metadata"]
+	peerExtensionID, hasMetadata := s.ExtensionIDs["ut_metadata"]
 	if !hasMetadata {
 		return nil, fmt.Errorf("peer does not support ut_metadata extension")
 	}
 
-	fmt.Printf("Requesting metadata using extension ID %d\n", metadataExtID)
+	const ourExtensionID = 1
+
+	fmt.Printf("Requesting metadata using peer's extension ID %d (expecting reply on ID %d)\n", peerExtensionID, ourExtensionID)
 
 	// First request piece 0 to get total size
-	if err := s.sendMetadataRequest(metadataExtID, 0); err != nil {
+	if err := s.sendMetadataRequest(peerExtensionID, 0); err != nil {
 		return nil, fmt.Errorf("failed to send metadata request: %w", err)
 	}
 
 	var totalSize int
 	var metadata []byte
+
+	// Initial strict deadline
+	s.Conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	defer s.Conn.SetReadDeadline(time.Time{})
 
 	// Wait for metadata pieces
 	for {
@@ -361,17 +371,30 @@ func (s *PeerSession) FetchMetadata(infoHash [20]byte) ([]byte, error) {
 			return nil, fmt.Errorf("failed to read message: %w", err)
 		}
 
-		if msg.ID == MsgExtended && len(msg.Payload) > 0 && int(msg.Payload[0]) == metadataExtID {
-			// Parse metadata message
-			var done bool
-			var err error
-			metadata, totalSize, done, err = s.handleMetadataMessage(msg.Payload[1:], metadata, totalSize)
-			if err != nil {
-				return nil, fmt.Errorf("failed to handle metadata message: %w", err)
+		s.Conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+
+		if msg.ID == MsgExtended {
+			if len(msg.Payload) > 0 {
+				incomingID := int(msg.Payload[0])
+
+				if incomingID == ourExtensionID {
+					var done bool
+					var err error
+					metadata, totalSize, done, err = s.handleMetadataMessage(msg.Payload[1:], metadata, totalSize)
+					if err != nil {
+						// Don't kill connection on decode error, might be partial data
+						fmt.Printf("Error handling metadata message: %v\n", err)
+						continue
+					}
+					if done {
+						return metadata, nil
+					}
+
+				} else {
+					fmt.Printf("Ignored unexpected MsgExtended ID: %d (Expected %d)\n", incomingID, ourExtensionID)
+				}
 			}
-			if done {
-				return metadata, nil
-			}
+		} else {
 		}
 	}
 }
@@ -383,10 +406,11 @@ func (s *PeerSession) sendMetadataRequest(extID, piece int) error {
 		Piece:   piece,
 	}
 
-	encoded, err := bencode.EncodeBytes(metaMsg)
-	if err != nil {
+	var encodedBuf bytes.Buffer
+	if err := bencode.Marshal(&encodedBuf, metaMsg); err != nil {
 		return fmt.Errorf("failed to encode metadata request: %w", err)
 	}
+	encoded := encodedBuf.Bytes()
 
 	// Create extended message: [ext_id][bencoded_dict]
 	payload := make([]byte, 1+len(encoded))
@@ -398,53 +422,62 @@ func (s *PeerSession) sendMetadataRequest(extID, piece int) error {
 
 // handleMetadataMessage processes a metadata response
 func (s *PeerSession) handleMetadataMessage(payload []byte, metadata []byte, totalSize int) ([]byte, int, bool, error) {
-	// Find where bencode ends and data begins
-	var metaMsg MetadataMessage
-	decoder := bencode.NewDecoder(bytes.NewReader(payload))
-	dataStart := 0
-	
-	if err := decoder.Decode(&metaMsg); err != nil {
-		return metadata, totalSize, false, fmt.Errorf("failed to decode metadata message: %w", err)
+	// 1. Manually find the end of the Bencode dictionary.
+	// We cannot use bencode.Unmarshal(bytes.NewBuffer(...)) because it buffers
+	// (over-reads) and loses the start of the binary data.
+
+	headerEnd, err := findBencodeEnd(payload)
+	if err != nil {
+		return metadata, totalSize, false, fmt.Errorf("invalid bencode structure: %w", err)
 	}
 
-	// Calculate where data starts (after bencode dict)
-	for i := 0; i < len(payload); i++ {
-		if payload[i] == 'e' { // End of bencode dict
-			dataStart = i + 1
-			break
-		}
+	// 2. Decode strictly the header part
+	headerBytes := payload[:headerEnd]
+	data := payload[headerEnd:] // This is the binary data, preserved intact!
+
+	var metaMsg MetadataMessage
+	if err := bencode.Unmarshal(bytes.NewReader(headerBytes), &metaMsg); err != nil {
+		return metadata, totalSize, false, fmt.Errorf("failed to decode metadata header: %w", err)
 	}
 
 	switch metaMsg.MsgType {
 	case MetadataData:
 		if totalSize == 0 {
 			totalSize = metaMsg.TotalSize
+			if totalSize <= 0 {
+				return metadata, totalSize, false, fmt.Errorf("invalid metadata size: %d", totalSize)
+			}
 			metadata = make([]byte, totalSize)
+			fmt.Printf("Metadata total size: %d bytes\n", totalSize)
 		}
 
-		// Copy piece data
-		pieceSize := 16384 // Standard metadata piece size
+		// Calculate offsets
+		pieceSize := 16384
 		start := metaMsg.Piece * pieceSize
-		end := start + len(payload[dataStart:])
+
+		if start >= totalSize {
+			return metadata, totalSize, false, fmt.Errorf("piece index %d out of bounds (size %d)", metaMsg.Piece, totalSize)
+		}
+
+		end := start + len(data)
 		if end > totalSize {
 			end = totalSize
 		}
 
-		copy(metadata[start:end], payload[dataStart:])
-		fmt.Printf("Received metadata piece %d (%d bytes)\n", metaMsg.Piece, len(payload[dataStart:]))
+		copy(metadata[start:end], data)
+		fmt.Printf("Received metadata piece %d (%d bytes)\n", metaMsg.Piece, len(data))
 
-		// Check if we have all pieces
-		if end >= totalSize {
+		// Check completion by piece index
+		lastPieceIndex := (totalSize - 1) / pieceSize
+		if metaMsg.Piece >= lastPieceIndex {
 			return metadata, totalSize, true, nil
 		}
 
 		// Request next piece
 		nextPiece := metaMsg.Piece + 1
-		if start+pieceSize < totalSize {
-			extID := s.ExtensionIDs["ut_metadata"]
-			if err := s.sendMetadataRequest(extID, nextPiece); err != nil {
-				return metadata, totalSize, false, fmt.Errorf("failed to request next piece: %w", err)
-			}
+		extID := s.ExtensionIDs["ut_metadata"]
+		if err := s.sendMetadataRequest(extID, nextPiece); err != nil {
+			return metadata, totalSize, false, fmt.Errorf("failed to request next piece: %w", err)
 		}
 
 	case MetadataReject:
@@ -452,4 +485,82 @@ func (s *PeerSession) handleMetadataMessage(payload []byte, metadata []byte, tot
 	}
 
 	return metadata, totalSize, false, nil
+}
+
+// findBencodeEnd scans the byte slice to find the index where the first bencode object ends.
+func findBencodeEnd(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, fmt.Errorf("empty data")
+	}
+
+	idx := 0
+	depth := 0
+
+	// Helper to read integer/length
+	// Returns the index after the 'e' or ':'
+	scanInt := func(start int, term byte) (int, int, error) {
+		i := start
+		for i < len(data) && data[i] >= '0' && data[i] <= '9' {
+			i++
+		}
+		if i == start {
+			return 0, 0, fmt.Errorf("expected number at %d", start)
+		}
+		if i >= len(data) || data[i] != term {
+			return 0, 0, fmt.Errorf("expected terminator '%c' at %d", term, i)
+		}
+		// Parse number
+		numVal := 0
+		// A real implementation would parse generic int, here we just need positive for string length
+		// For loop to parse int
+		for j := start; j < i; j++ {
+			numVal = numVal*10 + int(data[j]-'0')
+		}
+		return i + 1, numVal, nil
+	}
+
+	for idx < len(data) {
+		char := data[idx]
+
+		switch char {
+		case 'd', 'l':
+			depth++
+			idx++
+		case 'i':
+			// Integer: i<number>e. Scan until 'e'
+			idx++
+			next, _, err := scanInt(idx, 'e')
+			if err != nil {
+				return 0, err
+			}
+			idx = next
+			if depth == 0 {
+				return idx, nil
+			} // Should not happen for integer at root
+		case 'e':
+			depth--
+			idx++
+			if depth == 0 {
+				return idx, nil // Found end of root object
+			}
+		default:
+			if char >= '0' && char <= '9' {
+				// String: <len>:<string>
+				next, strLen, err := scanInt(idx, ':')
+				if err != nil {
+					return 0, err
+				}
+				idx = next + strLen
+				if idx > len(data) {
+					return 0, fmt.Errorf("string length out of bounds")
+				}
+				if depth == 0 {
+					return idx, nil
+				} // Should not happen for string at root
+			} else {
+				return 0, fmt.Errorf("unexpected character '%c' at %d", char, idx)
+			}
+		}
+	}
+	return 0, fmt.Errorf("incomplete bencode")
 }

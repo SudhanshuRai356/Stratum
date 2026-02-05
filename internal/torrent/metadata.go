@@ -1,16 +1,18 @@
 package torrent
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"fmt"
-	"github.com/zeebo/bencode"
+
+	bencode "github.com/jackpal/bencode-go"
 )
 
 // ReconstructTorrentFromMetadata creates a Torrent structure from magnet link and metadata
 func ReconstructTorrentFromMetadata(magnet *Mag_link, metadataBytes []byte) (*Torrent, error) {
 	// Parse the metadata (which is the bencoded info dictionary)
 	var info Info
-	if err := bencode.DecodeBytes(metadataBytes, &info); err != nil {
+	if err := bencode.Unmarshal(bytes.NewReader(metadataBytes), &info); err != nil {
 		return nil, fmt.Errorf("failed to decode metadata: %w", err)
 	}
 
@@ -29,7 +31,7 @@ func ReconstructTorrentFromMetadata(magnet *Mag_link, metadataBytes []byte) (*To
 	// Set announce URLs from magnet
 	if len(magnet.Trackers) > 0 {
 		torrent.Announce = magnet.Trackers[0]
-		
+
 		// Convert to announce list format
 		torrent.AnnounceList = make([][]string, len(magnet.Trackers))
 		for i, tracker := range magnet.Trackers {

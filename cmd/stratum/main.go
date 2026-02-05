@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
+	"math/rand"
 	"sync"
 
 	"github.com/Kushal-39/Stratum/internal/peer"
@@ -107,14 +107,6 @@ func (pm *PieceManager) update_avail(bitfield []byte) {
 		if HasPiece(bitfield, uint32(pidx)) {
 			pm.pieceAvailability[pidx]++
 		}
-	}
-}
-func (pm *PieceManager) update_piece_avail(pidx uint32) {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	if pidx < uint32(pm.totalPieces) {
-		pm.pieceAvailability[pidx]++
 	}
 }
 func (pm *PieceManager) pick_rarest_piece(peer_bitfield []byte) (uint32, bool) {
@@ -217,6 +209,8 @@ func allPiecesDone(completed []bool) bool {
 }
 
 func main() {
+	rand.Seed(time.Now().UnixNano()) 
+
 	outDir := flag.String("o", ".", "output directory")
 	flag.Parse()
 
@@ -344,7 +338,6 @@ func handleMagnetLink(magnetURI string) (*torrent.Torrent, error) {
 	copy(infoHash[:], magnet.Info_hash)
 
 	// Try to get peers from trackers to fetch metadata
-	// Create a temporary torrent structure just for getting peers
 	tempTorrent := &torrent.Torrent{
 		InfoHash: infoHash,
 	}
@@ -357,7 +350,6 @@ func handleMagnetLink(magnetURI string) (*torrent.Torrent, error) {
 		}
 	}
 
-	// Get peers from tracker
 	peers, err := tracker.Announce(tempTorrent)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get peers from tracker: %w", err)
@@ -373,31 +365,24 @@ func handleMagnetLink(magnetURI string) (*torrent.Torrent, error) {
 	for i, pe := range peers {
 		fmt.Printf("Attempting metadata exchange with peer %d/%d (%s:%d)\n", i+1, len(peers), pe.IP, pe.Port)
 		
-		// Convert tracker.Peer to peer.Peer
 		p := peer.Peer{
 			IP:   pe.IP,
 			Port: pe.Port,
 		}
 
-		// Establish connection with handshake
 		peerID := generatePeerID()
 		conn, reserved, err := peer.PerformHandshake(p, infoHash, peerID)
 		if err != nil {
-			fmt.Printf("Failed to handshake with peer: %v\n", err)
 			continue
 		}
 
-		// Create session
 		session := peer.NewPeerSession(conn, p, infoHash, peerID, reserved)
 
-		// Wait for handshake and extension support
 		if err := session.WaitForReady(); err != nil {
-			fmt.Printf("Peer not ready: %v\n", err)
 			conn.Close()
 			continue
 		}
 
-		// Check if extensions are supported
 		if !session.SupportsExtensions {
 			fmt.Printf("Peer does not support extensions\n")
 			conn.Close()
@@ -406,29 +391,39 @@ func handleMagnetLink(magnetURI string) (*torrent.Torrent, error) {
 
 		// Fetch metadata
 		metadata, err := session.FetchMetadata(infoHash)
-		conn.Close()
+		conn.Close() // Close immediately after fetch attempt
 
 		if err != nil {
 			fmt.Printf("Failed to fetch metadata: %v\n", err)
 			continue
 		}
 
-		fmt.Println("Successfully fetched metadata!")
+		fmt.Println("Successfully fetched metadata! Verifying...")
 
 		// Reconstruct torrent from metadata
+		// CRITICAL CHANGE: If this fails, LOG IT and CONTINUE. Do not return.
 		t, err := torrent.ReconstructTorrentFromMetadata(magnet, metadata)
 		if err != nil {
-			return nil, fmt.Errorf("failed to reconstruct torrent: %w", err)
+			fmt.Printf("Metadata verification failed for peer %s: %v. Trying next peer...\n", pe.IP, err)
+			continue
 		}
 
+		fmt.Println("Metadata verified and torrent reconstructed successfully!")
 		return t, nil
 	}
 
-	return nil, fmt.Errorf("failed to fetch metadata from any peer")
+	return nil, fmt.Errorf("failed to fetch valid metadata from any peer")
 }
 
 func generatePeerID() [20]byte {
 	var id [20]byte
-	copy(id[:], "-ST0001-123456789012")
+	// Prefix: -ST0001- (Azureus-style)
+	copy(id[:], "-ST0001-")
+	
+	// Fill the rest with random characters
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	for i := 8; i < 20; i++ {
+		id[i] = charset[rand.Intn(len(charset))]
+	}
 	return id
 }

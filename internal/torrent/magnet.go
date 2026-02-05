@@ -38,7 +38,7 @@ func Parse_Mag_URL (urli string) (*Mag_link, error) {
 						mag.Info_hash = info_hash
 					}
 				}else{
-					hash_str=strings.ToUpper(hash_str)+"======" //some weird torrent base32 padding rule man don't question it
+					hash_str=strings.ToUpper(hash_str) //some weird torrent base32 padding rule man don't question it
 					info_hash, err := base32.StdEncoding.DecodeString(hash_str)
 					if err == nil {
 						mag.Info_hash = info_hash
