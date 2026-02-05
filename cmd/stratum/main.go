@@ -4,12 +4,12 @@ import (
 	"container/heap"
 	"flag"
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
-	"math/rand"
 	"sync"
+	"time"
 
 	"github.com/Kushal-39/Stratum/internal/peer"
 	"github.com/Kushal-39/Stratum/internal/storage"
@@ -209,7 +209,7 @@ func allPiecesDone(completed []bool) bool {
 }
 
 func main() {
-	rand.Seed(time.Now().UnixNano()) 
+	rand.Seed(time.Now().UnixNano())
 
 	outDir := flag.String("o", ".", "output directory")
 	flag.Parse()
@@ -341,7 +341,7 @@ func handleMagnetLink(magnetURI string) (*torrent.Torrent, error) {
 	tempTorrent := &torrent.Torrent{
 		InfoHash: infoHash,
 	}
-	
+
 	if len(magnet.Trackers) > 0 {
 		tempTorrent.Announce = magnet.Trackers[0]
 		tempTorrent.AnnounceList = make([][]string, len(magnet.Trackers))
@@ -364,7 +364,7 @@ func handleMagnetLink(magnetURI string) (*torrent.Torrent, error) {
 	// Try to fetch metadata from peers
 	for i, pe := range peers {
 		fmt.Printf("Attempting metadata exchange with peer %d/%d (%s:%d)\n", i+1, len(peers), pe.IP, pe.Port)
-		
+
 		p := peer.Peer{
 			IP:   pe.IP,
 			Port: pe.Port,
@@ -419,7 +419,7 @@ func generatePeerID() [20]byte {
 	var id [20]byte
 	// Prefix: -ST0001- (Azureus-style)
 	copy(id[:], "-ST0001-")
-	
+
 	// Fill the rest with random characters
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	for i := 8; i < 20; i++ {
