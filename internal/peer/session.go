@@ -1,10 +1,13 @@
 package peer
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
+
+	"github.com/zeebo/bencode"
 )
 
 type PeerSession struct {
@@ -16,6 +19,7 @@ type PeerSession struct {
 	PeerID             [20]byte // Our peer ID
 	Downloader         *Downloader
 	SupportsExtensions bool
+	ExtensionIDs map[string]int
 }
 
 func pickNextPiece(bitfield []byte, completed []bool) (uint32, bool) {
@@ -47,9 +51,39 @@ func NewPeerSession(conn net.Conn, peer Peer, infoHash [20]byte, peerID [20]byte
 		InfoHash:           infoHash,
 		PeerID:             peerID,
 		SupportsExtensions: supportsExt, // Store this flag
+		ExtensionIDs: 	 make(map[string]int),
 	}
 }
-
+func send_Message(conn net.Conn, msgID byte, payload []byte) error {
+	leng:=uint32(1+len(payload))
+	buf:=make([]byte, 4)
+	binary.BigEndian.PutUint32(buf, leng)
+	_,e1:=conn.Write(buf)
+	if e1!=nil{
+		return e1
+	}
+	_,e2:=conn.Write([]byte{msgID})
+	if e2!=nil{
+		return e2
+	}
+	_,e3:=conn.Write(payload)
+	return e3
+}
+func SendExtHandshake(conn net.Conn, supportsExtensions bool) error {
+	ext_map:=map[string]int{
+		"ut_metadata": 1,
+	}
+	ext_handshake:=map[string]interface{}{
+		"m": ext_map,
+	}
+	var buf bytes.Buffer
+	err:=bencode.NewEncoder(&buf).Encode(ext_handshake)
+	if err!=nil{
+		return err
+	}
+	payload:=append([]byte{0}, buf.Bytes()...)
+	return send_Message(conn, MsgExtended, payload)
+}
 // WaitForReady reads messages until we have bitfield and unchoke.
 // This must be called before downloading pieces.
 func (s *PeerSession) WaitForReady() error {
@@ -81,7 +115,26 @@ func (s *PeerSession) WaitForReady() error {
 			}
 			fmt.Println("Sent INTERESTED")
 		case MsgExtended:
-			fmt.Println("Received Extended Message (Handshake or Payload)")
+			if len(msg.Payload) > 0 && msg.Payload[0] == 0{
+				err:=SendExtHandshake(s.Conn, s.SupportsExtensions)
+				if err != nil {
+					return fmt.Errorf("failed to send extended handshake: %w", err)
+				}
+				var extHandshake map[string]interface{}
+				e2:=bencode.DecodeBytes(msg.Payload[1:], &extHandshake)
+				if e2 != nil {
+					return fmt.Errorf("failed to decode extended message: %w", e2)
+				}
+				if mfield, ok := extHandshake["m"]; ok{
+					if ext,ok:=mfield.(map[string]interface{}); ok {
+						for k,v:=range ext{
+							if id,ok:=v.(int64);ok{
+								s.ExtensionIDs[k]=int(id)
+							}
+						}
+					}
+				}
+			}
 		case 255: // keep-alive
 			// ignore
 		default:
@@ -281,4 +334,122 @@ func (s *PeerSession) RunSinglePiece(pidx uint32, comp []bool, new_downloader fu
 			fmt.Println("RunSinglePiece: received message ID:", msg.ID)
 		}
 	}
+}
+
+// FetchMetadata fetches torrent metadata using BEP 09 ut_metadata protocol
+func (s *PeerSession) FetchMetadata(infoHash [20]byte) ([]byte, error) {
+	// Check if peer supports ut_metadata
+	metadataExtID, hasMetadata := s.ExtensionIDs["ut_metadata"]
+	if !hasMetadata {
+		return nil, fmt.Errorf("peer does not support ut_metadata extension")
+	}
+
+	fmt.Printf("Requesting metadata using extension ID %d\n", metadataExtID)
+
+	// First request piece 0 to get total size
+	if err := s.sendMetadataRequest(metadataExtID, 0); err != nil {
+		return nil, fmt.Errorf("failed to send metadata request: %w", err)
+	}
+
+	var totalSize int
+	var metadata []byte
+
+	// Wait for metadata pieces
+	for {
+		msg, err := ReadMessage(s.Conn)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read message: %w", err)
+		}
+
+		if msg.ID == MsgExtended && len(msg.Payload) > 0 && int(msg.Payload[0]) == metadataExtID {
+			// Parse metadata message
+			var done bool
+			var err error
+			metadata, totalSize, done, err = s.handleMetadataMessage(msg.Payload[1:], metadata, totalSize)
+			if err != nil {
+				return nil, fmt.Errorf("failed to handle metadata message: %w", err)
+			}
+			if done {
+				return metadata, nil
+			}
+		}
+	}
+}
+
+// sendMetadataRequest sends a metadata request for a specific piece
+func (s *PeerSession) sendMetadataRequest(extID, piece int) error {
+	metaMsg := MetadataMessage{
+		MsgType: MetadataRequest,
+		Piece:   piece,
+	}
+
+	encoded, err := bencode.EncodeBytes(metaMsg)
+	if err != nil {
+		return fmt.Errorf("failed to encode metadata request: %w", err)
+	}
+
+	// Create extended message: [ext_id][bencoded_dict]
+	payload := make([]byte, 1+len(encoded))
+	payload[0] = byte(extID)
+	copy(payload[1:], encoded)
+
+	return send_Message(s.Conn, MsgExtended, payload)
+}
+
+// handleMetadataMessage processes a metadata response
+func (s *PeerSession) handleMetadataMessage(payload []byte, metadata []byte, totalSize int) ([]byte, int, bool, error) {
+	// Find where bencode ends and data begins
+	var metaMsg MetadataMessage
+	decoder := bencode.NewDecoder(bytes.NewReader(payload))
+	dataStart := 0
+	
+	if err := decoder.Decode(&metaMsg); err != nil {
+		return metadata, totalSize, false, fmt.Errorf("failed to decode metadata message: %w", err)
+	}
+
+	// Calculate where data starts (after bencode dict)
+	for i := 0; i < len(payload); i++ {
+		if payload[i] == 'e' { // End of bencode dict
+			dataStart = i + 1
+			break
+		}
+	}
+
+	switch metaMsg.MsgType {
+	case MetadataData:
+		if totalSize == 0 {
+			totalSize = metaMsg.TotalSize
+			metadata = make([]byte, totalSize)
+		}
+
+		// Copy piece data
+		pieceSize := 16384 // Standard metadata piece size
+		start := metaMsg.Piece * pieceSize
+		end := start + len(payload[dataStart:])
+		if end > totalSize {
+			end = totalSize
+		}
+
+		copy(metadata[start:end], payload[dataStart:])
+		fmt.Printf("Received metadata piece %d (%d bytes)\n", metaMsg.Piece, len(payload[dataStart:]))
+
+		// Check if we have all pieces
+		if end >= totalSize {
+			return metadata, totalSize, true, nil
+		}
+
+		// Request next piece
+		nextPiece := metaMsg.Piece + 1
+		if start+pieceSize < totalSize {
+			extID := s.ExtensionIDs["ut_metadata"]
+			if err := s.sendMetadataRequest(extID, nextPiece); err != nil {
+				return metadata, totalSize, false, fmt.Errorf("failed to request next piece: %w", err)
+			}
+		}
+
+	case MetadataReject:
+		return metadata, totalSize, false, fmt.Errorf("metadata request rejected for piece %d", metaMsg.Piece)
+	}
+
+	return metadata, totalSize, false, nil
 }
