@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Kushal-39/Stratum/internal/dht"
@@ -273,32 +275,10 @@ func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *sto
 
 const PipelineDepth = 5
 const ReannounceInterval = 30 * time.Second
-func dht_test(){
-	fake_node:=[]dht.Node{}
-	for i:=0;i<5;i++{
-		fake_node=append(fake_node,dht.Node{
-			ID:   fmt.Sprintf("%040x", rand.Int63()),
-			IP:   fmt.Sprintf("192.168.1.%d", i+2),
-			Port: 6881 + i,
-		})
-	}
-	fake_node=append(fake_node, dht.Node{
-		ID:"shorty",
-		IP:"18903",
-		Port:700000,
-	})
-	err:=dht.SaveNodes("nodes.json",fake_node)
-	if err!=nil{
-		fmt.Printf("Error saving nodes: %v\n", err)
-		return
-	}
-	loaded_nodes:=dht.LoadNodes("nodes.json")
-	fmt.Printf("Loaded Nodes: %+v\n", loaded_nodes)
-}
-func main() {
-	//dht_test()
-	rand.Seed(time.Now().UnixNano())
 
+func main() {
+	rand.Seed(time.Now().UnixNano())
+	
 	outDir := flag.String("o", ".", "output directory")
 	flag.Parse()
 
@@ -334,6 +314,42 @@ func main() {
 	}
 
 	outputPath := filepath.Join(absOutDir, t.Info.Name)
+	dht_node_path:=filepath.Join(absOutDir, "dht_nodes.json")
+	dht_nodes:=dht.LoadNodes(dht_node_path)
+
+	//signal to save dht nodes on ctrl c
+	sig_chan:=make(chan os.Signal,1)
+	signal.Notify(sig_chan, os.Interrupt, syscall.SIGTERM)
+	//sub routine to save using the exit
+	go func(){
+		<-sig_chan //wait for the interrupt signal we are getting from the notify
+		fmt.Println("\nReceived interrupt signal, saving DHT nodes and exiting...")	
+		if len(dht_nodes)>0{
+			err=dht.SaveNodes(dht_node_path,dht_nodes)
+			if err!=nil{
+				fmt.Printf("Failed to save DHT nodes: %v\n", err)
+			}
+		}
+		os.Exit(0)
+	}()
+
+	ticker:=time.NewTicker(10*time.Minute) //interval for automatic saving of dht nodes data change from 10 minutes to whatever is convient for you
+	defer ticker.Stop()
+	//subroutine to save using the ticker
+	go func(){
+		for range ticker.C{
+			if len(dht_nodes)>0{
+				fmt.Println("Auto-saving DHT nodes...")
+				err=dht.SaveNodes(dht_node_path,dht_nodes)
+				if err!=nil{
+					fmt.Printf("Failed to save DHT nodes: %v\n", err)
+				}
+			}
+		}
+	}()
+	if len(dht_nodes)>0{
+		fmt.Printf("Loaded %d DHT nodes from file\n", len(dht_nodes))
+	}
 
 	// Step 2: Get peers from tracker
 	peers, err := tracker.Announce(t)
@@ -431,8 +447,13 @@ func main() {
 		// Brief pause before next round to avoid hammering tracker/peers
 		time.Sleep(2 * time.Second)
 	}
-
 	fmt.Println("\n=== All pieces downloaded successfully! ===")
+	if len(dht_nodes)>0{
+		err=dht.SaveNodes(dht_node_path,dht_nodes)
+		if err!=nil{
+			fmt.Printf("Failed to save DHT nodes: %v\n", err)
+		}
+	}
 }
 
 // handleMagnetLink processes a magnet link to get torrent metadata
