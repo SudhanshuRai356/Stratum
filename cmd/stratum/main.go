@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Kushal-39/Stratum/internal/dht"
 	"github.com/Kushal-39/Stratum/internal/peer"
 	"github.com/Kushal-39/Stratum/internal/storage"
 	"github.com/Kushal-39/Stratum/internal/torrent"
@@ -272,8 +273,30 @@ func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *sto
 
 const PipelineDepth = 5
 const ReannounceInterval = 30 * time.Second
-
+func dht_test(){
+	fake_node:=[]dht.Node{}
+	for i:=0;i<5;i++{
+		fake_node=append(fake_node,dht.Node{
+			ID:   fmt.Sprintf("%040x", rand.Int63()),
+			IP:   fmt.Sprintf("192.168.1.%d", i+2),
+			Port: 6881 + i,
+		})
+	}
+	fake_node=append(fake_node, dht.Node{
+		ID:"shorty",
+		IP:"18903",
+		Port:700000,
+	})
+	err:=dht.SaveNodes("nodes.json",fake_node)
+	if err!=nil{
+		fmt.Printf("Error saving nodes: %v\n", err)
+		return
+	}
+	loaded_nodes:=dht.LoadNodes("nodes.json")
+	fmt.Printf("Loaded Nodes: %+v\n", loaded_nodes)
+}
 func main() {
+	//dht_test()
 	rand.Seed(time.Now().UnixNano())
 
 	outDir := flag.String("o", ".", "output directory")
