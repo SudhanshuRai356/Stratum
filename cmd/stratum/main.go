@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"bytes"
+	"crypto/sha1"
 
 	"github.com/Kushal-39/Stratum/internal/peer"
 	"github.com/Kushal-39/Stratum/internal/storage"
@@ -62,6 +64,7 @@ type PieceManager struct { //struct to manage the concurrency in peers
 	mu                sync.Mutex
 	pieceAvailability []int
 	completedCount    int
+	badPeers          map[string]int
 }
 
 func NewPieceManager(totalPieces int) *PieceManager {
@@ -73,8 +76,21 @@ func NewPieceManager(totalPieces int) *PieceManager {
 		totalPieces:       totalPieces,
 		pieceAvailability: make([]int, totalPieces),
 		completedCount:    0,
+		badPeers:          make(map[string]int),
 	}
 	return pm
+}
+func (pm *PieceManager) ReportBadPeer(ip string) bool {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.badPeers[ip]++
+	return pm.badPeers[ip] >= 1 // Strict Policy: 1 Strike = Ban
+}
+
+func (pm *PieceManager) IsBanned(ip string) bool {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	return pm.badPeers[ip] >= 1
 }
 
 func (pm *PieceManager) allDone() bool {
@@ -148,51 +164,101 @@ func (pm *PieceManager) mark_piece_failed(pidx uint32) {
 	defer pm.mu.Unlock()
 	pm.in_progress[pidx] = false
 }
+func VerifyPiece(writer *storage.Writer, pieceIndex uint32, tor *torrent.Torrent) bool {
+	// 1. Calculate offset and length
+	pieceLen := tor.Info.PieceLength
+	// Handle last piece (might be smaller)
+	if int(pieceIndex) == len(tor.Info.Pieces)/20-1 {
+		remaining := int(tor.Info.Length - (int64(pieceIndex) * int64(pieceLen)))
+		pieceLen = remaining
+	}
+
+	// 2. Read the piece data from disk/storage
+	buf := make([]byte, pieceLen)
+	offset := int64(pieceIndex) * int64(tor.Info.PieceLength)
+
+	// Note: You might need to add a ReadAt method to your storage.Writer
+	// or access the underlying file directly. Assuming writer has a ReadAt:
+	_, err := writer.ReadAt(buf, offset)
+	if err != nil {
+		fmt.Printf("Verification error: failed to read piece %d: %v\n", pieceIndex, err)
+		return false
+	}
+
+	// 3. Calculate SHA1
+	hash := sha1.Sum(buf)
+
+	// 4. Compare with expected hash from metadata
+	start := pieceIndex * 20
+	end := start + 20
+	expected := []byte(tor.Info.Pieces[start:end])
+
+	if !bytes.Equal(hash[:], expected) {
+		return false
+	}
+	return true
+}
 func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *storage.Writer, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	pid := generatePeerID()
-	p := peer.Peer{
-		IP:   pe.IP,
-		Port: pe.Port,
-	}
-	// 1. Capture the reserved bytes
-	con, reserved, e := peer.PerformHandshake(p, tor.InfoHash, pid)
-	if e != nil {
-		// Log less aggressively for timeouts, but keep it for errors
-		// fmt.Println("Handshake failed with the peer", p.IP, "due to error ", e)
+    // 1. CHECK REPUTATION BEFORE CONNECTING
+	if pm.IsBanned(pe.IP) {
+		// fmt.Printf("Skipping banned peer %s\n", pe.IP)
 		return
 	}
-	defer con.Close() // Worker owns the connection lifecycle
 
-	// 2. Pass the reserved bytes to the session
+	pid := generatePeerID()
+	p := peer.Peer{IP: pe.IP, Port: pe.Port}
+
+	con, reserved, e := peer.PerformHandshake(p, tor.InfoHash, pid)
+	if e != nil {
+		return
+	}
+	defer con.Close()
+
 	session := peer.NewPeerSession(con, p, tor.InfoHash, pid, reserved)
-
-	// Wait for bitfield and unchoke - this actually reads messages from the peer
 	if err := session.WaitForReady(); err != nil {
-		fmt.Printf("Worker %s: Failed to get ready state: %v\n", p.IP, err)
 		return
 	}
 
 	pm.update_avail(session.Bitfield)
 
 	for !pm.allDone() {
+        // Double check ban status (in case they were banned by another worker)
+        if pm.IsBanned(pe.IP) {
+            return
+        }
+
 		piece_index, available := pm.pick_rarest_piece(session.Bitfield)
 		if !available {
-			fmt.Printf("Worker %s: No more pieces available from this peer\n", p.IP)
 			return
 		}
-		fmt.Printf("Worker %s downloading rarest piece %d\n", p.IP, piece_index)
+
+		fmt.Printf("Worker %s downloading piece %d\n", p.IP, piece_index)
 
 		e2 := downloadPiece(session, piece_index, tor, writer)
 		if e2 != nil {
 			fmt.Printf("Error downloading piece %d from %s: %v\n", piece_index, p.IP, e2)
-			pm.mark_piece_failed(piece_index) // mark for retry
-			return                            // Exit worker on error, main loop will retry with new peers
-		} else {
-			pm.mark_piece_completed(piece_index)
-			fmt.Printf("Completed piece %d (%d/%d)\n", piece_index, pm.completedCount, pm.totalPieces)
+			pm.mark_piece_failed(piece_index)
+			return
 		}
+        
+        // 2. VERIFY INTEGRITY
+        // (Assuming you added ReadAt to storage or open the file manually)
+        valid := VerifyPiece(writer, piece_index, tor)
+        
+        if valid {
+            // SUCCESS
+			pm.mark_piece_completed(piece_index)
+			fmt.Printf("Completed & Verified piece %d (%d/%d)\n", piece_index, pm.completedCount, pm.totalPieces)
+        } else {
+            // FAILURE - BAN HAMMER 🔨
+            fmt.Printf("SECURITY ALERT: Peer %s sent corrupt data for piece %d! Banning...\n", p.IP, piece_index)
+            
+            pm.ReportBadPeer(p.IP) // Add strike / Ban
+            pm.mark_piece_failed(piece_index) // Reset piece so honest peers can download it
+            return // Disconnect immediately
+        }
 	}
 }
 

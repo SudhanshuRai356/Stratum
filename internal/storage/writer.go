@@ -28,3 +28,7 @@ func (w *Writer) WriteAt(offset int64, data []byte)error{
 func (w *Writer)Close()error{
 	return w.f.Close()
 }
+func (w *Writer) ReadAt(b []byte, off int64) (int, error) {
+	// Access the underlying file directly
+	return w.f.ReadAt(b, off)
+}
