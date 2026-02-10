@@ -4,8 +4,9 @@ import (
 	"os"
 )
 
-type Writer struct{
-	f *os.File
+type Writer struct {
+    f *os.File
+    path string 
 }
 
 func New(path string, size int64)(*Writer,error){
@@ -17,7 +18,7 @@ func New(path string, size int64)(*Writer,error){
 	if err:=f.Truncate(size);err!=nil{
 		return nil,err
 	}
-	return &Writer{f:f},nil
+	return &Writer{f: f, path: path}, nil
 }
 
 func (w *Writer) WriteAt(offset int64, data []byte)error{

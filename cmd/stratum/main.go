@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"container/heap"
+	"crypto/sha1"
 	"flag"
 	"fmt"
 	"math/rand"
@@ -10,8 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"bytes"
-	"crypto/sha1"
 
 	"github.com/Kushal-39/Stratum/internal/peer"
 	"github.com/Kushal-39/Stratum/internal/storage"
@@ -67,15 +67,15 @@ type PieceManager struct { //struct to manage the concurrency in peers
 	badPeers          map[string]int
 }
 
-func NewPieceManager(totalPieces int) *PieceManager {
+func NewPieceManager(totalPieces int, initialCompleted []bool, initialCount int) *PieceManager {
 	pm := &PieceManager{
-		completed:         make([]bool, totalPieces),
+		completed:         initialCompleted, // Use loaded state
 		in_progress:       make([]bool, totalPieces),
 		piece_chain:       make(chan uint32, totalPieces),
 		done_chain:        make(chan uint32, totalPieces),
 		totalPieces:       totalPieces,
 		pieceAvailability: make([]int, totalPieces),
-		completedCount:    0,
+		completedCount:    initialCount, // Use loaded count
 		badPeers:          make(map[string]int),
 	}
 	return pm
@@ -201,7 +201,7 @@ func VerifyPiece(writer *storage.Writer, pieceIndex uint32, tor *torrent.Torrent
 func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *storage.Writer, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-    // 1. CHECK REPUTATION BEFORE CONNECTING
+	// 1. CHECK REPUTATION BEFORE CONNECTING
 	if pm.IsBanned(pe.IP) {
 		// fmt.Printf("Skipping banned peer %s\n", pe.IP)
 		return
@@ -224,10 +224,10 @@ func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *sto
 	pm.update_avail(session.Bitfield)
 
 	for !pm.allDone() {
-        // Double check ban status (in case they were banned by another worker)
-        if pm.IsBanned(pe.IP) {
-            return
-        }
+		// Double check ban status (in case they were banned by another worker)
+		if pm.IsBanned(pe.IP) {
+			return
+		}
 
 		piece_index, available := pm.pick_rarest_piece(session.Bitfield)
 		if !available {
@@ -242,37 +242,36 @@ func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *sto
 			pm.mark_piece_failed(piece_index)
 			return
 		}
-        
-        // 2. VERIFY INTEGRITY
-        // (Assuming you added ReadAt to storage or open the file manually)
-        valid := VerifyPiece(writer, piece_index, tor)
-        
-        if valid {
-            // SUCCESS
+
+		// 2. VERIFY INTEGRITY
+		// (Assuming you added ReadAt to storage or open the file manually)
+		valid := VerifyPiece(writer, piece_index, tor)
+
+		if valid {
+			// SUCCESS
 			pm.mark_piece_completed(piece_index)
 			fmt.Printf("Completed & Verified piece %d (%d/%d)\n", piece_index, pm.completedCount, pm.totalPieces)
-        } else {
-            // FAILURE - BAN HAMMER 🔨
-            fmt.Printf("SECURITY ALERT: Peer %s sent corrupt data for piece %d! Banning...\n", p.IP, piece_index)
-            
-            pm.ReportBadPeer(p.IP) // Add strike / Ban
-            pm.mark_piece_failed(piece_index) // Reset piece so honest peers can download it
-            return // Disconnect immediately
-        }
+			go func() {
+				pm.mu.Lock()
+				stateCopy := make([]bool, len(pm.completed))
+				copy(stateCopy, pm.completed)
+				pm.mu.Unlock()
+				
+				writer.SaveState(stateCopy)
+			}()
+			
+		} else {
+			fmt.Printf("SECURITY ALERT: Peer %s sent corrupt data for piece %d! Banning...\n", p.IP, piece_index)
+
+			pm.ReportBadPeer(p.IP)            // Add strike / Ban
+			pm.mark_piece_failed(piece_index) // Reset piece so honest peers can download it
+			return                            // Disconnect immediately
+		}
 	}
 }
 
 const PipelineDepth = 5
 const ReannounceInterval = 30 * time.Second
-
-func allPiecesDone(completed []bool) bool {
-	for _, done := range completed {
-		if !done {
-			return false
-		}
-	}
-	return true
-}
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
@@ -328,13 +327,39 @@ func main() {
 	totalPieces := int(len(t.Info.Pieces) / 20)
 	//completed := make([]bool, totalPieces)
 
-	writer, err := storage.New(outputPath, t.Info.Length) //create a writer to write the downloaded things to the disk
+	writer, err := storage.New(outputPath, t.Info.Length)
 	if err != nil {
 		panic(err)
 	}
 	defer writer.Close()
 
-	pm := NewPieceManager(totalPieces)
+	completedPieces, err := writer.LoadState(totalPieces)
+	completedCount := 0
+
+	if err == nil && completedPieces != nil {
+		fmt.Println("State file found! Verifying existing data...")
+		for i, done := range completedPieces {
+			if done {
+				// Verify integrity of pieces on disk
+				if VerifyPiece(writer, uint32(i), t) {
+					completedCount++
+				} else {
+					completedPieces[i] = false // Corrupt? Mark as missing.
+					fmt.Printf("Piece %d corrupt on disk. Queuing for redownload.\n", i)
+				}
+			}
+		}
+		fmt.Printf("Resuming download: %d/%d pieces already completed.\n", completedCount, totalPieces)
+	} else {
+		// Init empty if no state found
+		fmt.Println("No state file found. Starting fresh.")
+		completedPieces = make([]bool, totalPieces)
+	}
+
+	// 3. Pass loaded state to Manager
+	pm := NewPieceManager(totalPieces, completedPieces, completedCount)
+
+
 	roundNum := 0
 
 	for !pm.allDone() {
