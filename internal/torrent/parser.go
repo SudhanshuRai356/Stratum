@@ -22,8 +22,9 @@ type rawInfo struct {
 }
 
 type rawTorrent struct {
-	Announce string  `bencode:"announce"`
-	Info     rawInfo `bencode:"info"`
+	Announce     string     `bencode:"announce"`
+	AnnounceList [][]string `bencode:"announce-list"`
+	Info         rawInfo    `bencode:"info"`
 }
 
 func ParseTorrent(path string) (*Torrent, error) {
@@ -73,7 +74,8 @@ func ParseTorrent(path string) (*Torrent, error) {
 	}
 
 	t := &Torrent{
-		Announce: rt.Announce,
+		Announce:     rt.Announce,
+		AnnounceList: rt.AnnounceList,
 		Info: Info{
 			Name:        rt.Info.Name,
 			PieceLength: rt.Info.PieceLength,

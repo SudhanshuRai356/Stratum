@@ -259,10 +259,10 @@ func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *sto
 				stateCopy := make([]bool, len(pm.completed))
 				copy(stateCopy, pm.completed)
 				pm.mu.Unlock()
-				
+
 				writer.SaveState(stateCopy)
 			}()
-			
+
 		} else {
 			fmt.Printf("SECURITY ALERT: Peer %s sent corrupt data for piece %d! Banning...\n", p.IP, piece_index)
 
@@ -278,7 +278,7 @@ const ReannounceInterval = 30 * time.Second
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
-	
+
 	outDir := flag.String("o", ".", "output directory")
 	flag.Parse()
 
@@ -314,51 +314,107 @@ func main() {
 	}
 
 	outputPath := filepath.Join(absOutDir, t.Info.Name)
-	dht_node_path:=filepath.Join(absOutDir, "dht_nodes.json")
-	dht_nodes:=dht.LoadNodes(dht_node_path)
+	dht_node_path := filepath.Join(absOutDir, "dht_nodes.json")
+	dht_nodes := dht.LoadNodes(dht_node_path)
+
+	// Initialize DHT client
+	fmt.Println("Starting DHT client...")
+	dhtClient, err := dht.NewClient(6881)
+	if err != nil {
+		fmt.Printf("Failed to create DHT client: %v\n", err)
+		dhtClient = nil
+	} else {
+		err = dhtClient.Start()
+		if err != nil {
+			fmt.Printf("Failed to start DHT client: %v\n", err)
+			dhtClient = nil
+		} else {
+			// Bootstrap DHT
+			if len(dht_nodes) > 0 {
+				fmt.Printf("Bootstrapping DHT with %d saved nodes\n", len(dht_nodes))
+				err = dhtClient.Bootstrap(dht_nodes)
+			} else {
+				fmt.Println("Bootstrapping DHT with default nodes")
+				err = dhtClient.Bootstrap(nil)
+			}
+			if err != nil {
+				fmt.Printf("DHT bootstrap failed: %v\n", err)
+			} else {
+				fmt.Println("DHT bootstrap successful")
+				// Give DHT some time to stabilize
+				time.Sleep(2 * time.Second)
+			}
+		}
+	}
 
 	//signal to save dht nodes on ctrl c
-	sig_chan:=make(chan os.Signal,1)
+	sig_chan := make(chan os.Signal, 1)
 	signal.Notify(sig_chan, os.Interrupt, syscall.SIGTERM)
 	//sub routine to save using the exit
-	go func(){
+	go func() {
 		<-sig_chan //wait for the interrupt signal we are getting from the notify
-		fmt.Println("\nReceived interrupt signal, saving DHT nodes and exiting...")	
-		if len(dht_nodes)>0{
-			err=dht.SaveNodes(dht_node_path,dht_nodes)
-			if err!=nil{
+		fmt.Println("\nReceived interrupt signal, saving DHT nodes and exiting...")
+		if dhtClient != nil {
+			dhtClient.Stop()
+			dht_nodes = dhtClient.GetRoutingTable().GetAllNodes()
+		}
+		if len(dht_nodes) > 0 {
+			err = dht.SaveNodes(dht_node_path, dht_nodes)
+			if err != nil {
 				fmt.Printf("Failed to save DHT nodes: %v\n", err)
 			}
 		}
 		os.Exit(0)
 	}()
 
-	ticker:=time.NewTicker(10*time.Minute) //interval for automatic saving of dht nodes data change from 10 minutes to whatever is convient for you
+	ticker := time.NewTicker(10 * time.Minute) //interval for automatic saving of dht nodes data
 	defer ticker.Stop()
 	//subroutine to save using the ticker
-	go func(){
-		for range ticker.C{
-			if len(dht_nodes)>0{
+	go func() {
+		for range ticker.C {
+			if dhtClient != nil {
+				dht_nodes = dhtClient.GetRoutingTable().GetAllNodes()
+			}
+			if len(dht_nodes) > 0 {
 				fmt.Println("Auto-saving DHT nodes...")
-				err=dht.SaveNodes(dht_node_path,dht_nodes)
-				if err!=nil{
+				err = dht.SaveNodes(dht_node_path, dht_nodes)
+				if err != nil {
 					fmt.Printf("Failed to save DHT nodes: %v\n", err)
 				}
 			}
 		}
 	}()
-	if len(dht_nodes)>0{
-		fmt.Printf("Loaded %d DHT nodes from file\n", len(dht_nodes))
-	}
 
-	// Step 2: Get peers from tracker
+	// Step 2: Get peers from tracker and DHT
 	peers, err := tracker.Announce(t)
 	if err != nil {
-		panic(err)
+		fmt.Printf("Tracker announce failed: %v\n", err)
+		peers = []tracker.Peer{}
+	}
+
+	fmt.Printf("Tracker returned %d peers\n", len(peers))
+
+	// Also get peers from DHT if available
+	if dhtClient != nil {
+		fmt.Println("Querying DHT for peers...")
+		dhtPeerAddrs := dhtClient.GetPeers(t.InfoHash)
+		fmt.Printf("DHT returned %d peer addresses\n", len(dhtPeerAddrs))
+
+		// Convert DHT peer addresses to tracker.Peer format
+		for _, addr := range dhtPeerAddrs {
+			// Parse "IP:Port" format
+			var ip string
+			var port int
+			_, err := fmt.Sscanf(addr, "%s:%d", &ip, &port)
+			if err == nil {
+				peers = append(peers, tracker.Peer{IP: ip, Port: uint16(port)})
+			}
+		}
+		fmt.Printf("Total peers (tracker + DHT): %d\n", len(peers))
 	}
 
 	if len(peers) == 0 {
-		panic("no peers returned by tracker")
+		fmt.Println("Warning: No peers found initially. Will keep trying in download loop...")
 	}
 
 	// Step 3: Try to connect to peers and download
@@ -398,7 +454,6 @@ func main() {
 	// 3. Pass loaded state to Manager
 	pm := NewPieceManager(totalPieces, completedPieces, completedCount)
 
-
 	roundNum := 0
 
 	for !pm.allDone() {
@@ -409,18 +464,36 @@ func main() {
 		fmt.Println("Announcing to tracker...")
 		peers, err = tracker.Announce(t)
 		if err != nil {
-			fmt.Printf("Tracker announce failed: %v. Retrying in 10 seconds...\n", err)
-			time.Sleep(10 * time.Second)
-			continue // Retry the loop, do NOT exit
-		}
-
-		if len(peers) == 0 {
-			fmt.Println("No peers returned by tracker. Retrying in 10 seconds...")
-			time.Sleep(10 * time.Second)
-			continue // Retry the loop, do NOT exit
+			fmt.Printf("Tracker announce failed: %v\n", err)
+			peers = []tracker.Peer{}
 		}
 
 		fmt.Printf("Got %d peers from tracker\n", len(peers))
+
+		// Also query DHT for more peers
+		if dhtClient != nil {
+			fmt.Println("Querying DHT for additional peers...")
+			dhtPeerAddrs := dhtClient.GetPeers(t.InfoHash)
+
+			// Convert DHT peer addresses to tracker.Peer format
+			for _, addr := range dhtPeerAddrs {
+				var ip string
+				var port int
+				_, err := fmt.Sscanf(addr, "%s:%d", &ip, &port)
+				if err == nil {
+					peers = append(peers, tracker.Peer{IP: ip, Port: uint16(port)})
+				}
+			}
+			fmt.Printf("DHT added %d more peers\n", len(dhtPeerAddrs))
+		}
+
+		if len(peers) == 0 {
+			fmt.Println("No peers returned by tracker or DHT. Retrying in 10 seconds...")
+			time.Sleep(10 * time.Second)
+			continue // Retry the loop, do NOT exit
+		}
+
+		fmt.Printf("Total peers this round: %d\n", len(peers))
 
 		// Start workers for all available peers
 		var wg sync.WaitGroup
@@ -448,9 +521,16 @@ func main() {
 		time.Sleep(2 * time.Second)
 	}
 	fmt.Println("\n=== All pieces downloaded successfully! ===")
-	if len(dht_nodes)>0{
-		err=dht.SaveNodes(dht_node_path,dht_nodes)
-		if err!=nil{
+
+	// Save DHT nodes and cleanup
+	if dhtClient != nil {
+		dhtClient.Stop()
+		dht_nodes = dhtClient.GetRoutingTable().GetAllNodes()
+		fmt.Printf("Discovered %d DHT nodes during download\n", len(dht_nodes))
+	}
+	if len(dht_nodes) > 0 {
+		err = dht.SaveNodes(dht_node_path, dht_nodes)
+		if err != nil {
 			fmt.Printf("Failed to save DHT nodes: %v\n", err)
 		}
 	}
