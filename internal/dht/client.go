@@ -202,74 +202,128 @@ func (c *Client) FindNode(node Node, targetID []byte) []Node {
 	}
 }
 
-// GetPeers queries the DHT for peers sharing an infohash
+// GetPeers iteratively queries the DHT for peers sharing an infohash (Network Crawl)
 func (c *Client) GetPeers(infoHash [20]byte) []string {
-	fmt.Printf("Querying DHT for peers with infohash %x\n", infoHash)
+	fmt.Printf("Crawling DHT network for peers with infohash %x...\n", infoHash)
 
 	var allPeers []string
 	var mu sync.Mutex
 
-	// Get closest nodes to the infohash
-	closestNodes := c.routingTable.GetClosestNodes(infoHash[:], K_BUCKET_SIZE)
+	queried := make(map[string]bool)
+	// Start with the closest nodes we already know
+	toQuery := c.routingTable.GetClosestNodes(infoHash[:], K_BUCKET_SIZE)
 
-	if len(closestNodes) == 0 {
-		fmt.Println("No nodes in routing table for get_peers")
-		return allPeers
-	}
+	// Iterative search: go up to 8 levels deep into the network
+	for depth := 0; depth < 8; depth++ {
+		if len(toQuery) == 0 {
+			break
+		}
 
-	var wg sync.WaitGroup
-	for _, node := range closestNodes {
-		wg.Add(1)
-		go func(n Node) {
-			defer wg.Done()
+		fmt.Printf("  Crawl Depth %d: Querying %d nodes\n", depth+1, len(toQuery))
 
-			txID := generateTransactionID()
-			query := map[string]interface{}{
-				"t": txID,
-				"y": "q",
-				"q": "get_peers",
-				"a": map[string]interface{}{
-					"id":        string(c.nodeID),
-					"info_hash": string(infoHash[:]),
-				},
+		var nextBatch []Node
+		var wg sync.WaitGroup
+
+		for _, node := range toQuery {
+			if queried[node.ID] {
+				continue
 			}
+			queried[node.ID] = true
 
-			respChan := make(chan map[string]interface{}, 1)
-			c.txMu.Lock()
-			c.transactions[txID] = respChan
-			c.txMu.Unlock()
+			wg.Add(1)
+			go func(n Node) {
+				defer wg.Done()
 
-			defer func() {
-				c.txMu.Lock()
-				delete(c.transactions, txID)
-				c.txMu.Unlock()
-			}()
-
-			if err := c.sendMessage(n, query); err != nil {
-				return
-			}
-
-			select {
-			case resp := <-respChan:
-				peers := c.parsePeersResponse(resp)
-				mu.Lock()
-				allPeers = append(allPeers, peers...)
-				mu.Unlock()
-
-				// Also add any nodes returned
-				nodes := c.parseNodesResponse(resp)
-				for _, node := range nodes {
-					c.routingTable.AddNode(node)
+				txID := generateTransactionID()
+				query := map[string]interface{}{
+					"t": txID,
+					"y": "q",
+					"q": "get_peers",
+					"a": map[string]interface{}{
+						"id":        string(c.nodeID),
+						"info_hash": string(infoHash[:]),
+					},
 				}
-			case <-time.After(5 * time.Second):
-				return
+
+				respChan := make(chan map[string]interface{}, 1)
+				c.txMu.Lock()
+				c.transactions[txID] = respChan
+				c.txMu.Unlock()
+
+				defer func() {
+					c.txMu.Lock()
+					delete(c.transactions, txID)
+					c.txMu.Unlock()
+				}()
+
+				if err := c.sendMessage(n, query); err != nil {
+					return
+				}
+
+				select {
+				case resp := <-respChan:
+					// 1. Did they give us actual peers?
+					peers := c.parsePeersResponse(resp)
+					if len(peers) > 0 {
+						mu.Lock()
+						allPeers = append(allPeers, peers...)
+						mu.Unlock()
+					}
+
+					// 2. Add new nodes to our routing table and queue them for the next depth
+					nodes := c.parseNodesResponse(resp)
+					mu.Lock()
+					for _, newNode := range nodes {
+						c.routingTable.AddNode(newNode)
+						// Only queue if we haven't asked them yet
+						if !queried[newNode.ID] {
+							nextBatch = append(nextBatch, newNode)
+						}
+					}
+					mu.Unlock()
+
+				case <-time.After(3 * time.Second): // 3-second timeout per hop
+					return
+				}
+			}(node)
+		}
+
+		wg.Wait()
+
+		mu.Lock()
+		// If we found some peers, we can stop diving deeper to save time
+		if len(allPeers) > 0 {
+			mu.Unlock()
+			break
+		}
+
+		// If no peers yet, sort the new nodes to ensure we only query the ones
+		// strictly closer to our target infohash
+		if len(nextBatch) > 0 {
+			sortedNext := sortNodesByDistance(infoHash[:], nextBatch)
+			if len(sortedNext) > K_BUCKET_SIZE {
+				toQuery = sortedNext[:K_BUCKET_SIZE]
+			} else {
+				toQuery = sortedNext
 			}
-		}(node)
+		} else {
+			toQuery = nil
+		}
+		mu.Unlock()
 	}
 
-	wg.Wait()
-	fmt.Printf("DHT returned %d peers\n", len(allPeers))
-	return allPeers
+	// Remove duplicates from the final list
+	uniquePeers := make(map[string]bool)
+	var finalPeers []string
+	for _, p := range allPeers {
+		if !uniquePeers[p] {
+			uniquePeers[p] = true
+			finalPeers = append(finalPeers, p)
+		}
+	}
+
+	fmt.Printf("DHT crawl finished, returned %d unique peers\n", len(finalPeers))
+	return finalPeers
 }
 
 // AnnouncePeer announces that we have a torrent

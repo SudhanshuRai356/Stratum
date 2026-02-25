@@ -7,9 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -401,13 +403,15 @@ func main() {
 		fmt.Printf("DHT returned %d peer addresses\n", len(dhtPeerAddrs))
 
 		// Convert DHT peer addresses to tracker.Peer format
+		// Convert DHT peer addresses to tracker.Peer format
 		for _, addr := range dhtPeerAddrs {
-			// Parse "IP:Port" format
-			var ip string
-			var port int
-			_, err := fmt.Sscanf(addr, "%s:%d", &ip, &port)
+			host, portStr, err := net.SplitHostPort(addr)
 			if err == nil {
-				peers = append(peers, tracker.Peer{IP: ip, Port: uint16(port)})
+				// You might need to import "strconv" at the top of main.go
+				port, err := strconv.Atoi(portStr)
+				if err == nil {
+					peers = append(peers, tracker.Peer{IP: host, Port: uint16(port)})
+				}
 			}
 		}
 		fmt.Printf("Total peers (tracker + DHT): %d\n", len(peers))
@@ -476,12 +480,15 @@ func main() {
 			dhtPeerAddrs := dhtClient.GetPeers(t.InfoHash)
 
 			// Convert DHT peer addresses to tracker.Peer format
+			// Convert DHT peer addresses to tracker.Peer format
 			for _, addr := range dhtPeerAddrs {
-				var ip string
-				var port int
-				_, err := fmt.Sscanf(addr, "%s:%d", &ip, &port)
+				host, portStr, err := net.SplitHostPort(addr)
 				if err == nil {
-					peers = append(peers, tracker.Peer{IP: ip, Port: uint16(port)})
+					// You might need to import "strconv" at the top of main.go
+					port, err := strconv.Atoi(portStr)
+					if err == nil {
+						peers = append(peers, tracker.Peer{IP: host, Port: uint16(port)})
+					}
 				}
 			}
 			fmt.Printf("DHT added %d more peers\n", len(dhtPeerAddrs))
