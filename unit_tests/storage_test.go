@@ -38,7 +38,7 @@ func TestSaveState_NoneCompleted(t *testing.T) {
 	defer os.Remove(tmpFile)
 	defer os.Remove(tmpFile + ".state")
 
-	writer, err := storage.New(	tmpFile, 1024)
+	writer, err := storage.New(tmpFile, 1024)
 	if err != nil {
 		t.Fatal(err)
 	}

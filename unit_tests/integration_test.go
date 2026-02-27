@@ -5,11 +5,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	bencode "github.com/jackpal/bencode-go"
 	"github.com/Kushal-39/Stratum/internal/dht"
 	"github.com/Kushal-39/Stratum/internal/peer"
 	"github.com/Kushal-39/Stratum/internal/storage"
 	"github.com/Kushal-39/Stratum/internal/torrent"
+	bencode "github.com/jackpal/bencode-go"
 )
 
 // Integration Test Case 1: Complete torrent workflow
@@ -51,7 +51,7 @@ func TestIntegration_StorageState(t *testing.T) {
 	// Simulate downloading pieces
 	numPieces := 10
 	completed := make([]bool, numPieces)
-	
+
 	// Mark some pieces as completed
 	completed[0] = true
 	completed[3] = true
@@ -115,7 +115,7 @@ func TestIntegration_PieceSelection(t *testing.T) {
 			break
 		}
 		selectedPieces[piece] = true
-		
+
 		// Mark as picked by clearing bit
 		byteIdx := piece / 8
 		bitIdx := 7 - (piece % 8)
@@ -127,7 +127,7 @@ func TestIntegration_PieceSelection(t *testing.T) {
 	}
 }
 
-// Integration Test Case 5: Full download lifecycle  
+// Integration Test Case 5: Full download lifecycle
 func TestIntegration_DownloadLifecycle(t *testing.T) {
 	// 1. Parse torrent
 	testFile := createIntegrationTestTorrent(t, "lifecycle", 16384, false)

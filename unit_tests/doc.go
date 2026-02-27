@@ -24,5 +24,4 @@
 // - Minimal but meaningful comments (explain "why" not "what")
 // - Performance benchmarks where appropriate
 // - Integration tests for end-to-end workflows
-//
 package unittests

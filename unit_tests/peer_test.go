@@ -146,7 +146,7 @@ func TestPickPieceSparse(t *testing.T) {
 func BenchmarkPickPiece(b *testing.B) {
 	totalPieces := uint32(10000)
 	bitfield := make([]byte, (totalPieces+7)/8)
-	
+
 	// Set middle piece
 	middlePiece := totalPieces / 2
 	byteIdx := middlePiece / 8
