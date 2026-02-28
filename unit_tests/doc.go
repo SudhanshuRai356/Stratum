@@ -7,9 +7,10 @@
 // - peer_test.go: Peer bitfield operations and piece selection (10 test cases)
 // - dht_test.go: DHT node validation and network addressing (10 test cases)
 // - storage_test.go: State persistence and file I/O (5 test cases)
+// - seeder_test.go: Seeding functionality and upload serving (10 test cases)
 // - integration_test.go: End-to-end integration tests (5 test cases)
 //
-// Total: 40 comprehensive test cases covering all major components
+// Total: 50 comprehensive test cases covering all major components
 //
 // Key Testing Areas:
 // 1. Input validation and error handling
