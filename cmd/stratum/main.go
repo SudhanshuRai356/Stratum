@@ -531,7 +531,6 @@ func main() {
 
 	// Save DHT nodes and cleanup
 	if dhtClient != nil {
-		dhtClient.Stop()
 		dht_nodes = dhtClient.GetRoutingTable().GetAllNodes()
 		fmt.Printf("Discovered %d DHT nodes during download\n", len(dht_nodes))
 	}
@@ -540,6 +539,31 @@ func main() {
 		if err != nil {
 			fmt.Printf("Failed to save DHT nodes: %v\n", err)
 		}
+	}
+
+	// === SEEDING ===
+	fmt.Println("\n=== Starting seeder... ===")
+	seedID := generatePeerID()
+	pm.mu.Lock()
+	completedCopy := make([]bool, len(pm.completed))
+	copy(completedCopy, pm.completed)
+	pm.mu.Unlock()
+
+	seeder, err := peer.NewSeeder(t, writer, completedCopy, seedID, 6881)
+	if err != nil {
+		fmt.Printf("Failed to start seeder: %v\n", err)
+	} else {
+		seeder.Start()
+
+		// Announce to DHT that we're seeding
+		if dhtClient != nil {
+			dhtClient.AnnouncePeer(t.InfoHash, 6881)
+			fmt.Println("Announced to DHT as seeder")
+		}
+
+		fmt.Println("Seeding... Press Ctrl+C to stop.")
+		// Block forever until Ctrl+C (the signal handler will trigger os.Exit)
+		select {}
 	}
 }
 
