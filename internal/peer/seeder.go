@@ -23,6 +23,8 @@ type Seeder struct {
 	activeConns sync.WaitGroup
 	uploaded    int64 // total bytes uploaded
 	uploadMu    sync.Mutex
+	peers       map[net.Conn]bool
+	peerMu      sync.RWMutex
 }
 
 // NewSeeder creates a new seeder that will serve pieces to leechers
@@ -50,6 +52,7 @@ func NewSeeder(tor *torrent.Torrent, writer *storage.Writer, completed []bool, p
 		bitfield: bitfield,
 		peerID:   peerID,
 		running:  false,
+		peers:    make(map[net.Conn]bool),
 	}, nil
 }
 
@@ -73,6 +76,20 @@ func (s *Seeder) Stop() {
 	s.listener.Close()
 	s.activeConns.Wait() // wait for all active uploads to finish
 	fmt.Printf("Seeder stopped. Total uploaded: %d bytes\n", s.uploaded)
+}
+
+// MarkPieceAvailable safely updates the seeder's bitfield when a new piece is downloaded
+func (s *Seeder) MarkPieceAvailable(pieceIndex uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	byteIdx := pieceIndex / 8
+	bitIdx := 7 - (pieceIndex % 8)
+
+	// Ensure we don't panic if the bitfield is somehow sized incorrectly
+	if byteIdx < uint32(len(s.bitfield)) {
+		s.bitfield[byteIdx] |= (1 << uint(bitIdx))
+	}
 }
 
 // IsRunning returns whether seeder is active
@@ -158,8 +175,38 @@ func (s *Seeder) handleConnection(conn net.Conn) {
 		return
 	}
 
+	// NEW: Register peer for broadcasts
+	s.peerMu.Lock()
+	s.peers[conn] = true
+	s.peerMu.Unlock()
+
+	defer func() {
+		s.peerMu.Lock()
+		delete(s.peers, conn)
+		s.peerMu.Unlock()
+	}()
+
 	// Step 4: Handle messages from leecher (requests for pieces)
 	s.serveLoop(conn, remoteAddr)
+}
+
+// BroadcastHave tells all connected leechers that we just acquired a new piece
+func (s *Seeder) BroadcastHave(pieceIndex uint32) {
+	s.peerMu.RLock()
+	defer s.peerMu.RUnlock()
+
+	if len(s.peers) == 0 {
+		return // No one to tell
+	}
+
+	payload := make([]byte, 4)
+	binary.BigEndian.PutUint32(payload, pieceIndex)
+
+	for conn := range s.peers {
+		// MsgHave is usually ID 4. Assuming your send_Message takes (conn, ID, payload)
+		// and MsgHave is defined in your peer package.
+		go send_Message(conn, MsgHave, payload) 
+	}
 }
 
 // receiveIncomingHandshake reads a handshake from an incoming connection
@@ -266,10 +313,15 @@ func (s *Seeder) sendChoke(conn net.Conn) error {
 }
 
 func (s *Seeder) sendPiece(conn net.Conn, pieceIndex, begin, length uint32) error {
-	// Check if we actually have this piece
+	// Check if we actually have this piece (THREAD SAFE)
 	byteIdx := pieceIndex / 8
 	bitIdx := 7 - (pieceIndex % 8)
-	if byteIdx >= uint32(len(s.bitfield)) || (s.bitfield[byteIdx]&(1<<bitIdx)) == 0 {
+	
+	s.mu.RLock()
+	hasPiece := byteIdx < uint32(len(s.bitfield)) && (s.bitfield[byteIdx]&(1<<bitIdx)) != 0
+	s.mu.RUnlock()
+
+	if !hasPiece {
 		return fmt.Errorf("we don't have piece %d", pieceIndex)
 	}
 

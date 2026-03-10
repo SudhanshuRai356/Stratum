@@ -203,7 +203,7 @@ func VerifyPiece(writer *storage.Writer, pieceIndex uint32, tor *torrent.Torrent
 	}
 	return true
 }
-func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *storage.Writer, wg *sync.WaitGroup) {
+func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *storage.Writer, seeder *peer.Seeder, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	// 1. CHECK REPUTATION BEFORE CONNECTING
@@ -264,6 +264,12 @@ func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *sto
 
 				writer.SaveState(stateCopy)
 			}()
+
+			// NEW: Tell the seeder to update its bitfield and shout to the swarm
+			if seeder != nil {
+				seeder.MarkPieceAvailable(piece_index)
+				seeder.BroadcastHave(piece_index)
+			}
 
 		} else {
 			fmt.Printf("SECURITY ALERT: Peer %s sent corrupt data for piece %d! Banning...\n", p.IP, piece_index)
@@ -457,6 +463,27 @@ func main() {
 
 	// 3. Pass loaded state to Manager
 	pm := NewPieceManager(totalPieces, completedPieces, completedCount)
+	
+	// === SEEDING ===
+	fmt.Println("\n=== Starting seeder... ===")
+	seedID := generatePeerID()
+	pm.mu.Lock()
+	completedCopy := make([]bool, len(pm.completed))
+	copy(completedCopy, pm.completed)
+	pm.mu.Unlock()
+
+	seeder, err := peer.NewSeeder(t, writer, completedCopy, seedID, 6881)
+	if err != nil {
+		fmt.Printf("Failed to start seeder: %v\n", err)
+	} else {
+		seeder.Start()
+
+		// Announce to DHT that we're seeding
+		if dhtClient != nil {
+			dhtClient.AnnouncePeer(t.InfoHash, 6881)
+			fmt.Println("Announced to DHT as seeder")
+		}
+	}
 
 	roundNum := 0
 
@@ -506,7 +533,7 @@ func main() {
 		var wg sync.WaitGroup
 		for _, pe := range peers {
 			wg.Add(1)
-			go worker(pe, pm, t, writer, &wg)
+			go worker(pe, pm, t, writer, seeder, &wg)
 		}
 
 		// Wait for all workers to finish this round
@@ -541,30 +568,6 @@ func main() {
 		}
 	}
 
-	// === SEEDING ===
-	fmt.Println("\n=== Starting seeder... ===")
-	seedID := generatePeerID()
-	pm.mu.Lock()
-	completedCopy := make([]bool, len(pm.completed))
-	copy(completedCopy, pm.completed)
-	pm.mu.Unlock()
-
-	seeder, err := peer.NewSeeder(t, writer, completedCopy, seedID, 6881)
-	if err != nil {
-		fmt.Printf("Failed to start seeder: %v\n", err)
-	} else {
-		seeder.Start()
-
-		// Announce to DHT that we're seeding
-		if dhtClient != nil {
-			dhtClient.AnnouncePeer(t.InfoHash, 6881)
-			fmt.Println("Announced to DHT as seeder")
-		}
-
-		fmt.Println("Seeding... Press Ctrl+C to stop.")
-		// Block forever until Ctrl+C (the signal handler will trigger os.Exit)
-		select {}
-	}
 }
 
 // handleMagnetLink processes a magnet link to get torrent metadata
