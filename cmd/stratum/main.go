@@ -315,7 +315,35 @@ func main() {
 	}
 
 	fmt.Println("Torrent parsed:", t.Info.Name)
-	fmt.Println("Size:", t.Info.Length)
+
+	// NEW: Build the FileInfo slice for the storage engine
+	var storageFiles []storage.FileInfo
+	var totalLength int64
+
+	if len(t.Info.Files) > 0 {
+		fmt.Println("Mode: Multi-file directory")
+		for _, f := range t.Info.Files {
+			filePath := strings.Join(f.Path, "/")
+			fmt.Printf("  - %s (%d bytes)\n", filePath, f.Length)
+			totalLength += int64(f.Length)
+
+			storageFiles = append(storageFiles, storage.FileInfo{
+				Path:   f.Path,
+				Length: int64(f.Length),
+			})
+		}
+	} else {
+		fmt.Println("Mode: Single file")
+		totalLength = t.Info.Length
+
+		storageFiles = append(storageFiles, storage.FileInfo{
+			Path:   nil, 
+			Length: t.Info.Length,
+		})
+	}
+
+	t.Info.Length = totalLength
+	fmt.Println("Total Size:", t.Info.Length)
 	absOutDir, err := filepath.Abs(*outDir)
 	if err != nil {
 		panic(err)
@@ -432,7 +460,7 @@ func main() {
 	totalPieces := int(len(t.Info.Pieces) / 20)
 	//completed := make([]bool, totalPieces)
 
-	writer, err := storage.New(outputPath, t.Info.Length)
+	writer, err := storage.New(outputPath, storageFiles)
 	if err != nil {
 		panic(err)
 	}
@@ -463,7 +491,7 @@ func main() {
 
 	// 3. Pass loaded state to Manager
 	pm := NewPieceManager(totalPieces, completedPieces, completedCount)
-	
+
 	// === SEEDING ===
 	fmt.Println("\n=== Starting seeder... ===")
 	seedID := generatePeerID()

@@ -28,7 +28,7 @@ func TestE2E_SeedAndDownload(t *testing.T) {
 
 	// --- Setup: create torrent data on disk and build a seeder ---
 	tmpFile := t.TempDir() + "/e2e-test-file"
-	writer, err := storage.New(tmpFile, totalLen)
+	writer, err := storage.New(tmpFile, []storage.FileInfo{{Path: nil, Length: totalLen}})
 	if err != nil {
 		t.Fatal(err)
 	}

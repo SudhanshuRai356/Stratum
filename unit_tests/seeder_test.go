@@ -20,7 +20,7 @@ func createSeedTestData(t *testing.T, numPieces int, pieceLength int) (*torrent.
 	tmpFile := filepath.Join(t.TempDir(), "seed-test-file")
 
 	totalLength := int64(numPieces * pieceLength)
-	writer, err := storage.New(tmpFile, totalLength)
+	writer, err := storage.New(tmpFile, []storage.FileInfo{{Path: nil, Length: totalLength}})
 	if err != nil {
 		t.Fatal(err)
 	}

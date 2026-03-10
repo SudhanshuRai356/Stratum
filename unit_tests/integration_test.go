@@ -42,7 +42,7 @@ func TestIntegration_StorageState(t *testing.T) {
 	defer os.Remove(tmpFile)
 	defer os.Remove(tmpFile + ".state")
 
-	writer, err := storage.New(tmpFile, 32768)
+	writer, err := storage.New(tmpFile, []storage.FileInfo{{Path: nil, Length: 32768}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestIntegration_DownloadLifecycle(t *testing.T) {
 	defer os.Remove(storageFile)
 	defer os.Remove(storageFile + ".state")
 
-	writer, err := storage.New(storageFile, tor.Info.Length)
+	writer, err := storage.New(storageFile, []storage.FileInfo{{Path: nil, Length: tor.Info.Length}})
 	if err != nil {
 		t.Fatal(err)
 	}
