@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	bencode "github.com/jackpal/bencode-go"
 
@@ -28,44 +30,73 @@ func Announce(t *torrent.Torrent) ([]Peer, error) {
 	if len(announceURLs) == 0 {
 		return nil, fmt.Errorf("no trackers in torrent")
 	}
-	var lastErr error
 
+	var wg sync.WaitGroup
+	// Create a channel to collect peers from all successful trackers
+	peerChan := make(chan []Peer, len(announceURLs))
+
+	// FIRE THE SHOTGUN: Query all trackers simultaneously
 	for _, announce := range announceURLs {
-		fmt.Println("Trying tracker:", announce)
+		wg.Add(1)
+		go func(trackerURL string) {
+			defer wg.Done()
 
-		var peers []Peer
-		var err error
+			var peers []Peer
+			var err error
 
-		if strings.HasPrefix(announce, "udp://") {
-			peers, err = AnnounceUDP(announce, t)
-		} else if strings.HasPrefix(announce, "http://") || strings.HasPrefix(announce, "https://") {
-			announceURL := announce + "?" + params.Encode()
-			peers, err = announceHTTP(announceURL)
-		} else {
-			continue
-		}
+			if strings.HasPrefix(trackerURL, "udp://") {
+				peers, err = AnnounceUDP(trackerURL, t)
+			} else if strings.HasPrefix(trackerURL, "http://") || strings.HasPrefix(trackerURL, "https://") {
+				fullURL := trackerURL + "?" + params.Encode()
+				peers, err = announceHTTP(fullURL)
+			} else {
+				return // Unsupported protocol
+			}
 
-		if err != nil {
-			fmt.Println("Tracker failed:", err)
-			lastErr = err
-			continue
-		}
+			if err != nil {
+				// Silently drop dead trackers to avoid spamming the terminal
+				return
+			}
 
-		if len(peers) == 0 {
-			fmt.Println("Tracker returned no peers")
-			continue
-		}
-
-		fmt.Println("Tracker succeeded:", announce)
-		return peers, nil
+			if len(peers) > 0 {
+				fmt.Printf("Tracker %s succeeded, got %d peers\n", trackerURL, len(peers))
+				peerChan <- peers
+			}
+		}(announce)
 	}
 
-	return nil, fmt.Errorf("all trackers failed: %v", lastErr)
+	// Wait for all tracker requests to finish (or timeout)
+	wg.Wait()
+	close(peerChan)
 
+	// Deduplicate the peers using a map
+	peerMap := make(map[string]Peer)
+	for peerList := range peerChan {
+		for _, p := range peerList {
+			peerKey := fmt.Sprintf("%s:%d", p.IP, p.Port)
+			peerMap[peerKey] = p
+		}
+	}
+
+	var finalPeers []Peer
+	for _, p := range peerMap {
+		finalPeers = append(finalPeers, p)
+	}
+
+	if len(finalPeers) == 0 {
+		return nil, fmt.Errorf("all trackers timed out or returned 0 peers")
+	}
+
+	return finalPeers, nil
 }
 
 func announceHTTP(announceURL string) ([]Peer, error) {
-	resp, err := http.Get(announceURL)
+	// FIX: Never use default http.Get. Always enforce a strict timeout.
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Get(announceURL)
 	if err != nil {
 		return nil, err
 	}
@@ -76,8 +107,15 @@ func announceHTTP(announceURL string) ([]Peer, error) {
 		return nil, err
 	}
 
-	respMap := trackerResp.(map[string]interface{})
-	peersVal := respMap["peers"]
+	respMap, ok := trackerResp.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid tracker response format")
+	}
+
+	peersVal, ok := respMap["peers"]
+	if !ok {
+		return nil, fmt.Errorf("no peers field in response")
+	}
 
 	var peers []Peer
 
@@ -97,14 +135,18 @@ func announceHTTP(announceURL string) ([]Peer, error) {
 
 	case []interface{}:
 		for _, peerVal := range p {
-			peerMap := peerVal.(map[string]interface{})
-			ip := peerMap["ip"].(string)
-			port := uint16(peerMap["port"].(int64))
-
-			peers = append(peers, Peer{
-				IP:   ip,
-				Port: port,
-			})
+			peerMap, ok := peerVal.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			ip, ok1 := peerMap["ip"].(string)
+			portFloat, ok2 := peerMap["port"].(int64)
+			if ok1 && ok2 {
+				peers = append(peers, Peer{
+					IP:   ip,
+					Port: uint16(portFloat),
+				})
+			}
 		}
 
 	default:

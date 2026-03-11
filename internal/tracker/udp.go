@@ -27,6 +27,8 @@ func AnnounceUDP(trackerURL string, t *torrent.Torrent) ([]Peer, error) {
 		return nil, err
 	}
 	defer conn.Close()
+	// FIX: Force a hard 5-second deadline on all Read/Write operations
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
 
 	connectTxID := rand.Uint32()
 
@@ -97,10 +99,10 @@ func AnnounceUDP(trackerURL string, t *torrent.Torrent) ([]Peer, error) {
 	var peers []Peer
 	for i := 20; i+6 <= n; i += 6 {
 		rawIp := net.IPv4(resp[i], resp[i+1], resp[i+2], resp[i+3])
-		ip:=rawIp.String()
+		ip := rawIp.String()
 		port := binary.BigEndian.Uint16(resp[i+4 : i+6])
 
-		if ip== "0.0.0.0" || port == 0 {
+		if ip == "0.0.0.0" || port == 0 {
 			continue
 		}
 		if !rawIp.IsGlobalUnicast() || port == 0 {
