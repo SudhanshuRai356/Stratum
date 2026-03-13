@@ -2,7 +2,9 @@ package dht
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -22,6 +24,7 @@ type Client struct {
 	txMu         sync.RWMutex
 	running      bool
 	mu           sync.RWMutex
+	tokenSecret  []byte // HMAC secret for token generation
 }
 
 // NewClient creates a new DHT client
@@ -38,6 +41,9 @@ func NewClient(port int) (*Client, error) {
 		return nil, fmt.Errorf("failed to listen on UDP port %d: %w", port, err)
 	}
 
+	secret := make([]byte, 32)
+	rand.Read(secret)
+
 	client := &Client{
 		nodeID:       nodeID,
 		port:         port,
@@ -45,6 +51,7 @@ func NewClient(port int) (*Client, error) {
 		routingTable: NewRoutingTable(nodeID),
 		transactions: make(map[string]chan map[string]interface{}),
 		running:      false,
+		tokenSecret:  secret,
 	}
 
 	return client, nil
@@ -599,8 +606,8 @@ func (c *Client) respondGetPeers(msg map[string]interface{}, txID string, addr *
 	closestNodes := c.routingTable.GetClosestNodes([]byte(infoHashStr), K_BUCKET_SIZE)
 	nodesCompact := compactNodes(closestNodes)
 
-	// Generate a token (simplified - should be based on IP and secret)
-	token := generateToken()
+	// Generate an HMAC token bound to the requester's IP
+	token := c.generateIPToken(addr.IP)
 
 	c.sendResponse(txID, addr, map[string]interface{}{
 		"id":    string(c.nodeID),
@@ -629,10 +636,17 @@ func generateTransactionID() string {
 	return string(b)
 }
 
-func generateToken() string {
-	b := make([]byte, 8)
-	rand.Read(b)
-	return string(b)
+// generateIPToken creates an HMAC token bound to the requester's IP address.
+func (c *Client) generateIPToken(ip net.IP) string {
+	mac := hmac.New(sha256.New, c.tokenSecret)
+	mac.Write(ip)
+	return string(mac.Sum(nil)[:8])
+}
+
+// validateToken checks that a token was issued by us for the given IP.
+func (c *Client) validateToken(token string, ip net.IP) bool {
+	expected := c.generateIPToken(ip)
+	return hmac.Equal([]byte(token), []byte(expected))
 }
 
 func compactNodes(nodes []Node) string {

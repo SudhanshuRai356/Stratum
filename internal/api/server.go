@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"log"
 	"net/http"
 	"time"
@@ -10,13 +12,37 @@ import (
 
 const allowedOrigin = "http://localhost:3000"
 
+// apiToken is a per-session secret printed to stdout on startup.
+// Clients must pass it as ?token=<value> to authenticate.
+var apiToken string
+
+func init() {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic("failed to generate API token: " + err.Error())
+	}
+	apiToken = hex.EncodeToString(b)
+}
+
+// GetAPIToken returns the session token for display to the user.
+func GetAPIToken() string {
+	return apiToken
+}
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return r.Header.Get("Origin") == allowedOrigin
+		origin := r.Header.Get("Origin")
+		return origin == allowedOrigin || origin == ""
 	},
 }
 
 func handleWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
+	// Verify per-session token
+	if r.URL.Query().Get("token") != apiToken {
+		http.Error(w, "unauthorized", http.StatusForbidden)
+		return
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("ws upgrade failed: %v", err)

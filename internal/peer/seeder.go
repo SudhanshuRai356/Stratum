@@ -3,6 +3,7 @@ package peer
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -10,6 +11,9 @@ import (
 	"github.com/Kushal-39/Stratum/internal/storage"
 	"github.com/Kushal-39/Stratum/internal/torrent"
 )
+
+// maxConcurrentConns limits how many peer connections the seeder handles at once.
+const maxConcurrentConns = 200
 
 // Seeder listens for incoming peer connections and uploads pieces
 type Seeder struct {
@@ -25,6 +29,7 @@ type Seeder struct {
 	uploadMu    sync.Mutex
 	peers       map[net.Conn]bool
 	peerMu      sync.RWMutex
+	connSem     chan struct{} // limits concurrent connections
 }
 
 // NewSeeder creates a new seeder that will serve pieces to leechers
@@ -53,6 +58,7 @@ func NewSeeder(tor *torrent.Torrent, writer *storage.Writer, completed []bool, p
 		peerID:   peerID,
 		running:  false,
 		peers:    make(map[net.Conn]bool),
+		connSem:  make(chan struct{}, maxConcurrentConns),
 	}, nil
 }
 
@@ -142,6 +148,15 @@ func (s *Seeder) acceptLoop() {
 
 func (s *Seeder) handleConnection(conn net.Conn) {
 	defer s.activeConns.Done()
+
+	// Enforce concurrent connection limit
+	select {
+	case s.connSem <- struct{}{}:
+		defer func() { <-s.connSem }()
+	default:
+		conn.Close()
+		return
+	}
 	defer conn.Close()
 
 	remoteAddr := conn.RemoteAddr().String()
@@ -205,7 +220,7 @@ func (s *Seeder) BroadcastHave(pieceIndex uint32) {
 	for conn := range s.peers {
 		// MsgHave is usually ID 4. Assuming your send_Message takes (conn, ID, payload)
 		// and MsgHave is defined in your peer package.
-		go send_Message(conn, MsgHave, payload) 
+		go send_Message(conn, MsgHave, payload)
 	}
 }
 
@@ -215,9 +230,9 @@ func receiveIncomingHandshake(conn net.Conn) ([20]byte, error) {
 
 	buf := make([]byte, handshakeLen)
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	n, err := conn.Read(buf)
-	if err != nil || n < handshakeLen {
-		return infoHash, fmt.Errorf("failed to read handshake: %v (read %d bytes)", err, n)
+	_, err := io.ReadFull(conn, buf)
+	if err != nil {
+		return infoHash, fmt.Errorf("failed to read handshake: %w", err)
 	}
 
 	if buf[0] != byte(len(protocolString)) {
@@ -316,7 +331,7 @@ func (s *Seeder) sendPiece(conn net.Conn, pieceIndex, begin, length uint32) erro
 	// Check if we actually have this piece (THREAD SAFE)
 	byteIdx := pieceIndex / 8
 	bitIdx := 7 - (pieceIndex % 8)
-	
+
 	s.mu.RLock()
 	hasPiece := byteIdx < uint32(len(s.bitfield)) && (s.bitfield[byteIdx]&(1<<bitIdx)) != 0
 	s.mu.RUnlock()

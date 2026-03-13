@@ -3,7 +3,9 @@ package dht
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"math/big"
+	"net"
 	"sync"
 	"time"
 )
@@ -12,13 +14,16 @@ const (
 	K_BUCKET_SIZE = 8  // Maximum nodes per bucket
 	ALPHA         = 3  // Parallel lookup parameter
 	NODE_ID_LEN   = 20 // 160 bits = 20 bytes
+	maxNodesPerIP = 4  // Max nodes allowed from a single IP
 )
 
 // RoutingTable manages the DHT routing table with K-buckets
 type RoutingTable struct {
-	selfID  []byte
-	buckets [NODE_ID_LEN * 8]*KBucket // 160 buckets (one per bit)
-	mu      sync.RWMutex
+	selfID    []byte
+	buckets   [NODE_ID_LEN * 8]*KBucket // 160 buckets (one per bit)
+	mu        sync.RWMutex
+	ipCounts  map[string]int // tracks how many node IDs map to each IP
+	ipCountMu sync.Mutex
 }
 
 // KBucket stores nodes at a specific distance range
@@ -31,7 +36,8 @@ type KBucket struct {
 // NewRoutingTable creates a new routing table
 func NewRoutingTable(selfID []byte) *RoutingTable {
 	rt := &RoutingTable{
-		selfID: selfID,
+		selfID:   selfID,
+		ipCounts: make(map[string]int),
 	}
 	for i := 0; i < NODE_ID_LEN*8; i++ {
 		rt.buckets[i] = &KBucket{
@@ -60,6 +66,35 @@ func (rt *RoutingTable) AddNode(node Node) error {
 		return err
 	}
 
+	// Reject node IDs that are all zeros or all ones (trivially forged)
+	allZero := true
+	allOne := true
+	for _, b := range nodeIDBytes {
+		if b != 0x00 {
+			allZero = false
+		}
+		if b != 0xFF {
+			allOne = false
+		}
+	}
+	if allZero || allOne {
+		return fmt.Errorf("rejecting trivial node ID")
+	}
+
+	// Reject private/loopback IPs (prevents routing table pollution with non-routable addresses)
+	ip := net.ParseIP(node.IP)
+	if ip != nil && (ip.IsLoopback() || ip.IsUnspecified()) {
+		return fmt.Errorf("rejecting non-routable IP: %s", node.IP)
+	}
+
+	// Per-IP rate limit: prevent a single IP from sybil-flooding the table
+	rt.ipCountMu.Lock()
+	if rt.ipCounts[node.IP] >= maxNodesPerIP {
+		rt.ipCountMu.Unlock()
+		return fmt.Errorf("too many nodes from IP %s", node.IP)
+	}
+	rt.ipCountMu.Unlock()
+
 	bucketIndex := rt.getBucketIndex(nodeIDBytes)
 
 	rt.mu.Lock()
@@ -84,6 +119,9 @@ func (rt *RoutingTable) AddNode(node Node) error {
 	if len(bucket.nodes) < K_BUCKET_SIZE {
 		bucket.nodes = append(bucket.nodes, node)
 		bucket.lastUpdate = time.Now()
+		rt.ipCountMu.Lock()
+		rt.ipCounts[node.IP]++
+		rt.ipCountMu.Unlock()
 	} else {
 		// Bucket full - could implement replacement logic here
 		// For now, we keep the oldest nodes (they've proven reliable)

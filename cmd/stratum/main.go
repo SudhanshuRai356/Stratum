@@ -110,6 +110,11 @@ func (pm *PieceManager) remainingPieces() int {
 	defer pm.mu.Unlock()
 	return pm.totalPieces - pm.completedCount
 }
+func (pm *PieceManager) getProgress() (int, int) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	return pm.completedCount, pm.totalPieces
+}
 func downloadPiece(session *peer.PeerSession, pidx uint32, tor *torrent.Torrent, writer *storage.Writer) error {
 	temp_Comp := make([]bool, len(tor.Info.Pieces)/20)
 	err := session.RunSinglePiece(pidx, temp_Comp, func(pid uint32) *peer.Downloader {
@@ -256,13 +261,14 @@ func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *sto
 		if valid {
 			// SUCCESS
 			pm.mark_piece_completed(piece_index)
-			fmt.Printf("Completed & Verified piece %d (%d/%d)\n", piece_index, pm.completedCount, pm.totalPieces)
+			completed, total := pm.getProgress()
+			fmt.Printf("Completed & Verified piece %d (%d/%d)\n", piece_index, completed, total)
 
 			if hub != nil {
-				progress := float64(pm.completedCount) / float64(pm.totalPieces) * 100.0
+				progress := float64(completed) / float64(total) * 100.0
 				status := "Downloading"
-				if pm.completedCount >= pm.totalPieces {
-					status = "Seeding" // We will intercept this for "Scanning" later
+				if completed >= total {
+					status = "Seeding"
 				}
 
 				state := api.TorrentState{
@@ -373,7 +379,12 @@ func main() {
 		panic(err)
 	}
 
-	outputPath := filepath.Join(absOutDir, t.Info.Name)
+	safeName, err := storage.SanitizeName(t.Info.Name)
+	if err != nil {
+		panic(fmt.Sprintf("Torrent has unsafe name: %v", err))
+	}
+
+	outputPath := filepath.Join(absOutDir, safeName)
 	dht_node_path := filepath.Join(absOutDir, "dht_nodes.json")
 	dht_nodes := dht.LoadNodes(dht_node_path)
 
@@ -515,6 +526,8 @@ func main() {
 
 	// --- NEW API SERVER SETUP ---
 	fmt.Println("Starting local API bridge on 127.0.0.1:8080...")
+	fmt.Printf("API token: %s\n", api.GetAPIToken())
+	fmt.Println("Connect via: ws://127.0.0.1:8080/ws?token=" + api.GetAPIToken())
 	hub := api.NewHub()
 	go hub.Run()
 	go func() {
@@ -559,7 +572,7 @@ func main() {
 		if leftBytes > t.Info.Length {
 			leftBytes = t.Info.Length // Sanity cap
 		}
-		peers, err = tracker.Announce(t,leftBytes)
+		peers, err = tracker.Announce(t, leftBytes)
 		if err != nil {
 			fmt.Printf("Tracker announce failed: %v\n", err)
 			peers = []tracker.Peer{}
@@ -656,7 +669,7 @@ func main() {
 
 	for range seedTicker.C {
 		fmt.Println("Seeding: Re-announcing to swarm...")
-		_, _ = tracker.Announce(t,0)
+		_, _ = tracker.Announce(t, 0)
 	}
 
 }
@@ -690,7 +703,7 @@ func handleMagnetLink(magnetURI string) (*torrent.Torrent, error) {
 		}
 	}
 
-	peers, err := tracker.Announce(tempTorrent,0)
+	peers, err := tracker.Announce(tempTorrent, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get peers from tracker: %w", err)
 	}

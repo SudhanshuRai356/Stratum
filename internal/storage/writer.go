@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type FileInfo struct {
@@ -24,6 +25,35 @@ type Writer struct {
 	totalLen int64
 }
 
+// SanitizeName validates a torrent name for use as a directory/file name.
+func SanitizeName(name string) (string, error) {
+	if name == "" || name == "." || name == ".." {
+		return "", fmt.Errorf("illegal torrent name: %q", name)
+	}
+	if strings.ContainsAny(name, "/\\") || strings.Contains(name, "\x00") {
+		return "", fmt.Errorf("illegal characters in torrent name: %q", name)
+	}
+	return name, nil
+}
+
+// sanitizePath validates that path components don't escape the base directory.
+func sanitizePath(basePath string, components []string) (string, error) {
+	for _, p := range components {
+		if p == "" || p == "." || p == ".." ||
+			strings.ContainsAny(p, "/\\") ||
+			strings.Contains(p, "\x00") {
+			return "", fmt.Errorf("illegal path component: %q", p)
+		}
+	}
+	full := filepath.Join(append([]string{basePath}, components...)...)
+	full = filepath.Clean(full)
+	base := filepath.Clean(basePath) + string(os.PathSeparator)
+	if !strings.HasPrefix(full, base) && full != filepath.Clean(basePath) {
+		return "", fmt.Errorf("path escapes base directory: %s", full)
+	}
+	return full, nil
+}
+
 func New(basePath string, files []FileInfo) (*Writer, error) {
 	w := &Writer{
 		path:  basePath,
@@ -33,9 +63,15 @@ func New(basePath string, files []FileInfo) (*Writer, error) {
 	var currentGlobalOffset int64 = 0
 
 	for _, fInfo := range files {
-		fullPath := basePath
-		for _, p := range fInfo.Path {
-			fullPath = filepath.Join(fullPath, p)
+		var fullPath string
+		if len(fInfo.Path) > 0 {
+			var err error
+			fullPath, err = sanitizePath(basePath, fInfo.Path)
+			if err != nil {
+				return nil, fmt.Errorf("unsafe file path in torrent: %w", err)
+			}
+		} else {
+			fullPath = basePath
 		}
 
 		dir := filepath.Dir(fullPath)

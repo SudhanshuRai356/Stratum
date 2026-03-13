@@ -34,10 +34,25 @@ func NewDownloader(
 	// FIX: Calculate exact length for the final piece
 	pieceLength := t.Info.PieceLength
 	totalPieces := len(t.Info.Pieces) / 20
-	
+
+	if totalPieces <= 0 || t.Info.PieceLength <= 0 || t.Info.Length <= 0 {
+		return nil // metadata invariant violation - caller must handle nil
+	}
+
 	if int(pieceIndex) == totalPieces-1 {
 		// It's the last piece, calculate the remainder
 		pieceLength = int(t.Info.Length - int64(pieceIndex)*int64(t.Info.PieceLength))
+	}
+
+	if pieceLength <= 0 || pieceLength > t.Info.PieceLength {
+		return nil // underflow or overflow detected
+	}
+
+	// Bounds-check the hash slice before we ever use it
+	hashStart := int(pieceIndex) * 20
+	hashEnd := hashStart + 20
+	if hashEnd > len(t.Info.Pieces) {
+		return nil
 	}
 
 	return &Downloader{
@@ -96,7 +111,12 @@ func (d *Downloader) HandlePiece(
 	if d.Assembler.Received == d.Assembler.Length {
 		fmt.Println("Piece fully downloaded")
 
-		expected := []byte(d.Torrent.Info.Pieces[d.PieceIndex*20 : (d.PieceIndex+1)*20])
+		hashStart := int(d.PieceIndex) * 20
+		hashEnd := hashStart + 20
+		if hashEnd > len(d.Torrent.Info.Pieces) {
+			return false, fmt.Errorf("piece index %d hash out of bounds", d.PieceIndex)
+		}
+		expected := []byte(d.Torrent.Info.Pieces[hashStart:hashEnd])
 
 		if d.Assembler.Verify(expected) {
 			offset := int64(d.PieceIndex) * int64(d.Torrent.Info.PieceLength)
