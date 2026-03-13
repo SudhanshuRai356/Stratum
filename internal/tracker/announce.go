@@ -14,7 +14,7 @@ import (
 	"github.com/Kushal-39/Stratum/internal/torrent"
 )
 
-func Announce(t *torrent.Torrent) ([]Peer, error) {
+func Announce(t *torrent.Torrent, left int64) ([]Peer, error) {
 	peerID := "-SG0001-123456789012"
 
 	params := url.Values{}
@@ -23,8 +23,7 @@ func Announce(t *torrent.Torrent) ([]Peer, error) {
 	params.Add("port", "6881")
 	params.Add("uploaded", "0")
 	params.Add("downloaded", "0")
-	params.Add("left", strconv.FormatInt(t.Info.Length, 10))
-	params.Add("compact", "1")
+	params.Add("left", strconv.FormatInt(left, 10))
 
 	announceURLs := t.GetAllAnnounceURLs()
 	if len(announceURLs) == 0 {
@@ -45,7 +44,7 @@ func Announce(t *torrent.Torrent) ([]Peer, error) {
 			var err error
 
 			if strings.HasPrefix(trackerURL, "udp://") {
-				peers, err = AnnounceUDP(trackerURL, t)
+				peers, err = AnnounceUDP(trackerURL, t, left)
 			} else if strings.HasPrefix(trackerURL, "http://") || strings.HasPrefix(trackerURL, "https://") {
 				fullURL := trackerURL + "?" + params.Encode()
 				peers, err = announceHTTP(fullURL)

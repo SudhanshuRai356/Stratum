@@ -11,7 +11,7 @@ import (
 	"github.com/Kushal-39/Stratum/internal/torrent"
 )
 
-func AnnounceUDP(trackerURL string, t *torrent.Torrent) ([]Peer, error) {
+func AnnounceUDP(trackerURL string, t *torrent.Torrent, left int64) ([]Peer, error) {
 	u, err := url.Parse(trackerURL)
 	if err != nil {
 		return nil, err
@@ -66,7 +66,7 @@ func AnnounceUDP(trackerURL string, t *torrent.Torrent) ([]Peer, error) {
 	copy(announce[36:56], []byte("-ST0001-123456789012"))
 
 	binary.BigEndian.PutUint64(announce[56:64], 0)                     // downloaded
-	binary.BigEndian.PutUint64(announce[64:72], uint64(t.Info.Length)) // left
+	binary.BigEndian.PutUint64(announce[64:72], uint64(left)) // left
 	binary.BigEndian.PutUint64(announce[72:80], 0)                     // uploaded
 	binary.BigEndian.PutUint32(announce[80:84], 0)                     // event
 	binary.BigEndian.PutUint32(announce[84:88], 0)                     // IP

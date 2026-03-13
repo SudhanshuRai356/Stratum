@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Kushal-39/Stratum/internal/api"
 	"github.com/Kushal-39/Stratum/internal/dht"
 	"github.com/Kushal-39/Stratum/internal/peer"
 	"github.com/Kushal-39/Stratum/internal/storage"
@@ -203,7 +204,7 @@ func VerifyPiece(writer *storage.Writer, pieceIndex uint32, tor *torrent.Torrent
 	}
 	return true
 }
-func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *storage.Writer, seeder *peer.Seeder, wg *sync.WaitGroup) {
+func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *storage.Writer, seeder *peer.Seeder, hub *api.Hub, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	// 1. CHECK REPUTATION BEFORE CONNECTING
@@ -256,6 +257,28 @@ func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *sto
 			// SUCCESS
 			pm.mark_piece_completed(piece_index)
 			fmt.Printf("Completed & Verified piece %d (%d/%d)\n", piece_index, pm.completedCount, pm.totalPieces)
+
+			if hub != nil {
+				progress := float64(pm.completedCount) / float64(pm.totalPieces) * 100.0
+				status := "Downloading"
+				if pm.completedCount >= pm.totalPieces {
+					status = "Seeding" // We will intercept this for "Scanning" later
+				}
+
+				state := api.TorrentState{
+					InfoHash: fmt.Sprintf("%x", tor.InfoHash),
+					Name:     tor.Info.Name,
+					Progress: progress,
+					State:    status,
+				}
+
+				// Non-blocking send. If the websocket is choked, drop the UI update.
+				select {
+				case hub.Broadcast <- state:
+				default:
+				}
+			}
+
 			go func() {
 				pm.mu.Lock()
 				stateCopy := make([]bool, len(pm.completed))
@@ -338,7 +361,7 @@ func main() {
 		totalLength = t.Info.Length
 
 		storageFiles = append(storageFiles, storage.FileInfo{
-			Path:   nil, 
+			Path:   nil,
 			Length: t.Info.Length,
 		})
 	}
@@ -423,7 +446,7 @@ func main() {
 	}()
 
 	// Step 2: Get peers from tracker and DHT
-	peers, err := tracker.Announce(t)
+	peers, err := tracker.Announce(t, t.Info.Length)
 	if err != nil {
 		fmt.Printf("Tracker announce failed: %v\n", err)
 		peers = []tracker.Peer{}
@@ -490,6 +513,16 @@ func main() {
 		completedPieces = make([]bool, totalPieces)
 	}
 
+	// --- NEW API SERVER SETUP ---
+	fmt.Println("Starting local API bridge on 127.0.0.1:8080...")
+	hub := api.NewHub()
+	go hub.Run()
+	go func() {
+		if err := api.ListenAndServe(hub); err != nil {
+			fmt.Printf("API Server crashed: %v\n", err)
+		}
+	}()
+
 	// 3. Pass loaded state to Manager
 	pm := NewPieceManager(totalPieces, completedPieces, completedCount)
 
@@ -522,7 +555,11 @@ func main() {
 
 		// Always announce at the start of each round to get fresh peers
 		fmt.Println("Announcing to tracker...")
-		peers, err = tracker.Announce(t)
+		leftBytes := int64(pm.remainingPieces()) * int64(t.Info.PieceLength)
+		if leftBytes > t.Info.Length {
+			leftBytes = t.Info.Length // Sanity cap
+		}
+		peers, err = tracker.Announce(t,leftBytes)
 		if err != nil {
 			fmt.Printf("Tracker announce failed: %v\n", err)
 			peers = []tracker.Peer{}
@@ -562,7 +599,7 @@ func main() {
 		var wg sync.WaitGroup
 		for _, pe := range peers {
 			wg.Add(1)
-			go worker(pe, pm, t, writer, seeder, &wg)
+			go worker(pe, pm, t, writer, seeder, hub, &wg)
 		}
 
 		// Wait for all workers to finish this round
@@ -585,7 +622,7 @@ func main() {
 	}
 	fmt.Println("\n=== All pieces downloaded successfully! ===")
 
-	// Save DHT nodes and cleanup
+	// Save DHT nodes immediately
 	if dhtClient != nil {
 		dht_nodes = dhtClient.GetRoutingTable().GetAllNodes()
 		fmt.Printf("Discovered %d DHT nodes during download\n", len(dht_nodes))
@@ -595,6 +632,31 @@ func main() {
 		if err != nil {
 			fmt.Printf("Failed to save DHT nodes: %v\n", err)
 		}
+	}
+
+	fmt.Println("Entering perpetual seeding mode. Press Ctrl+C to exit.")
+
+	// Force a final UI update
+	if hub != nil {
+		state := api.TorrentState{
+			InfoHash: fmt.Sprintf("%x", t.InfoHash),
+			Name:     t.Info.Name,
+			Progress: 100.0,
+			State:    "Seeding",
+		}
+		select {
+		case hub.Broadcast <- state:
+		default:
+		}
+	}
+
+	// Keep process alive and stay in the tracker's peer list
+	seedTicker := time.NewTicker(30 * time.Minute)
+	defer seedTicker.Stop()
+
+	for range seedTicker.C {
+		fmt.Println("Seeding: Re-announcing to swarm...")
+		_, _ = tracker.Announce(t,0)
 	}
 
 }
@@ -628,7 +690,7 @@ func handleMagnetLink(magnetURI string) (*torrent.Torrent, error) {
 		}
 	}
 
-	peers, err := tracker.Announce(tempTorrent)
+	peers, err := tracker.Announce(tempTorrent,0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get peers from tracker: %w", err)
 	}
