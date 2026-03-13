@@ -315,6 +315,7 @@ func main() {
 	}
 
 	fmt.Println("Torrent parsed:", t.Info.Name)
+	fmt.Printf("DEBUG: t.Info.Files length: %d\n", len(t.Info.Files))
 
 	// NEW: Build the FileInfo slice for the storage engine
 	var storageFiles []storage.FileInfo

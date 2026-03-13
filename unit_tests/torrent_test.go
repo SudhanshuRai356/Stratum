@@ -4,8 +4,8 @@ import (
 	"os"
 	"testing"
 
-	bencode "github.com/jackpal/bencode-go"
 	"github.com/Kushal-39/Stratum/internal/torrent"
+	"github.com/zeebo/bencode"
 )
 
 // Test Case 1: Parse single-file torrent
@@ -226,7 +226,7 @@ func createTestTorrent(t *testing.T, name string, size int64, multiFile bool) st
 		Info:     info,
 	}
 
-	if err := bencode.Marshal(tmpFile, data); err != nil {
+	if err := bencode.NewEncoder(tmpFile).Encode(data); err != nil {
 		t.Fatal(err)
 	}
 
@@ -268,7 +268,7 @@ func createTestTorrentWithAnnounceList(t *testing.T) string {
 		},
 	}
 
-	if err := bencode.Marshal(tmpFile, data); err != nil {
+	if err := bencode.NewEncoder(tmpFile).Encode(data); err != nil {
 		t.Fatal(err)
 	}
 

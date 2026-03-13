@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	bencode "github.com/jackpal/bencode-go"
+	"github.com/zeebo/bencode"
 
 	"github.com/Kushal-39/Stratum/internal/torrent"
 )
@@ -102,12 +102,13 @@ func announceHTTP(announceURL string) ([]Peer, error) {
 	}
 	defer resp.Body.Close()
 
-	trackerResp, err := bencode.Decode(resp.Body)
+	var respMap map[string]interface{}
+	err = bencode.NewDecoder(resp.Body).Decode(&respMap)
 	if err != nil {
 		return nil, err
 	}
 
-	respMap, ok := trackerResp.(map[string]interface{})
+	ok := respMap != nil
 	if !ok {
 		return nil, fmt.Errorf("invalid tracker response format")
 	}

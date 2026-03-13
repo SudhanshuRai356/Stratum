@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	bencode "github.com/jackpal/bencode-go"
 	"io"
 	"net"
 	"time"
+
+	"github.com/zeebo/bencode"
 )
 
 type PeerSession struct {
@@ -84,7 +85,7 @@ func SendExtHandshake(conn net.Conn, supportsExtensions bool) error {
 		"m": ext_map,
 	}
 	var buf bytes.Buffer
-	err := bencode.Marshal(&buf, ext_handshake)
+	err := bencode.NewEncoder(&buf).Encode(ext_handshake)
 	if err != nil {
 		return err
 	}
@@ -126,7 +127,7 @@ func (s *PeerSession) WaitForReady() error {
 			if len(msg.Payload) > 0 && msg.Payload[0] == 0 {
 				// Use the struct we defined in messages.go
 				var payload ExtendedHandshakePayload
-				e2 := bencode.Unmarshal(bytes.NewReader(msg.Payload[1:]), &payload)
+				e2 := bencode.NewDecoder(bytes.NewReader(msg.Payload[1:])).Decode(&payload)
 				if e2 != nil {
 					return fmt.Errorf("failed to decode extended message: %w", e2)
 				}
@@ -407,7 +408,7 @@ func (s *PeerSession) sendMetadataRequest(extID, piece int) error {
 	}
 
 	var encodedBuf bytes.Buffer
-	if err := bencode.Marshal(&encodedBuf, metaMsg); err != nil {
+	if err := bencode.NewEncoder(&encodedBuf).Encode(metaMsg); err != nil {
 		return fmt.Errorf("failed to encode metadata request: %w", err)
 	}
 	encoded := encodedBuf.Bytes()
@@ -436,7 +437,7 @@ func (s *PeerSession) handleMetadataMessage(payload []byte, metadata []byte, tot
 	data := payload[headerEnd:] // This is the binary data, preserved intact!
 
 	var metaMsg MetadataMessage
-	if err := bencode.Unmarshal(bytes.NewReader(headerBytes), &metaMsg); err != nil {
+	if err := bencode.NewDecoder(bytes.NewReader(headerBytes)).Decode(&metaMsg); err != nil {
 		return metadata, totalSize, false, fmt.Errorf("failed to decode metadata header: %w", err)
 	}
 

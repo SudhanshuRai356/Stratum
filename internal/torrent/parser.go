@@ -5,7 +5,7 @@ import (
 	"crypto/sha1"
 	"os"
 
-	bencode "github.com/jackpal/bencode-go"
+	"github.com/zeebo/bencode"
 )
 
 type rawInfo struct {
@@ -15,10 +15,7 @@ type rawInfo struct {
 
 	Length int64 `bencode:"length"`
 
-	Files []struct {
-		Length int64    `bencode:"length"`
-		Path   []string `bencode:"path"`
-	} `bencode:"files"`
+	Files []File `bencode:"files"`
 }
 
 type rawTorrent struct {
@@ -35,7 +32,7 @@ func ParseTorrent(path string) (*Torrent, error) {
 	defer f.Close()
 
 	var rt rawTorrent
-	if err := bencode.Unmarshal(f, &rt); err != nil {
+	if err := bencode.NewDecoder(f).Decode(&rt); err != nil {
 		return nil, err
 	}
 
@@ -45,16 +42,14 @@ func ParseTorrent(path string) (*Torrent, error) {
 	}
 	defer f2.Close()
 
-	raw, err := bencode.Decode(f2)
-	if err != nil {
+	var raw map[string]interface{}
+	if err := bencode.NewDecoder(f2).Decode(&raw); err != nil {
 		return nil, err
 	}
 
-	torrentMap := raw.(map[string]interface{})
-
-	infoMap := torrentMap["info"]
+	infoMap := raw["info"]
 	var buf bytes.Buffer
-	if err := bencode.Marshal(&buf, infoMap); err != nil {
+	if err := bencode.NewEncoder(&buf).Encode(infoMap); err != nil {
 		return nil, err
 	}
 	infoHash := sha1.Sum(buf.Bytes())
@@ -81,6 +76,7 @@ func ParseTorrent(path string) (*Torrent, error) {
 			PieceLength: rt.Info.PieceLength,
 			Pieces:      rt.Info.Pieces,
 			Length:      totalLength,
+			Files:       rt.Info.Files, 
 		},
 		InfoHash: infoHash,
 	}

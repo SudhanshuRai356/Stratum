@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	bencode "github.com/jackpal/bencode-go"
+	"github.com/zeebo/bencode"
 )
 
 // Client represents a DHT client
@@ -425,12 +425,13 @@ func (c *Client) readLoop() {
 
 // handleMessage processes an incoming DHT message
 func (c *Client) handleMessage(data []byte, addr *net.UDPAddr) {
-	msg, err := bencode.Decode(bytes.NewReader(data))
+	var msgDict map[string]interface{}
+	err := bencode.NewDecoder(bytes.NewReader(data)).Decode(&msgDict)
 	if err != nil {
 		return
 	}
 
-	msgDict, ok := msg.(map[string]interface{})
+	ok := msgDict != nil
 	if !ok {
 		return
 	}
@@ -507,7 +508,7 @@ func (c *Client) handleQuery(msg map[string]interface{}, addr *net.UDPAddr) {
 // sendMessage sends a message to a node
 func (c *Client) sendMessage(node Node, msg map[string]interface{}) error {
 	var buf bytes.Buffer
-	err := bencode.Marshal(&buf, msg)
+	err := bencode.NewEncoder(&buf).Encode(msg)
 	if err != nil {
 		return err
 	}
@@ -545,7 +546,7 @@ func (c *Client) sendResponse(txID string, addr *net.UDPAddr, response map[strin
 	}
 
 	var buf bytes.Buffer
-	err := bencode.Marshal(&buf, msg)
+	err := bencode.NewEncoder(&buf).Encode(msg)
 	if err != nil {
 		return
 	}

@@ -9,7 +9,7 @@ import (
 	"github.com/Kushal-39/Stratum/internal/peer"
 	"github.com/Kushal-39/Stratum/internal/storage"
 	"github.com/Kushal-39/Stratum/internal/torrent"
-	bencode "github.com/jackpal/bencode-go"
+	"github.com/zeebo/bencode"
 )
 
 // Integration Test Case 1: Complete torrent workflow
@@ -236,7 +236,7 @@ func createIntegrationTestTorrent(t *testing.T, name string, size int64, multiFi
 		Info:     info,
 	}
 
-	if err := bencode.Marshal(tmpFile, data); err != nil {
+	if err := bencode.NewEncoder(tmpFile).Encode(data); err != nil {
 		t.Fatal(err)
 	}
 

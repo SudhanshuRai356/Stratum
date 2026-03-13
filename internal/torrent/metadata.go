@@ -5,14 +5,14 @@ import (
 	"crypto/sha1"
 	"fmt"
 
-	bencode "github.com/jackpal/bencode-go"
+	"github.com/zeebo/bencode"
 )
 
 // ReconstructTorrentFromMetadata creates a Torrent structure from magnet link and metadata
 func ReconstructTorrentFromMetadata(magnet *Mag_link, metadataBytes []byte) (*Torrent, error) {
 	// Parse the metadata (which is the bencoded info dictionary)
 	var info Info
-	if err := bencode.Unmarshal(bytes.NewReader(metadataBytes), &info); err != nil {
+	if err := bencode.NewDecoder(bytes.NewReader(metadataBytes)).Decode(&info); err != nil {
 		return nil, fmt.Errorf("failed to decode metadata: %w", err)
 	}
 
