@@ -31,10 +31,19 @@ func NewDownloader(
 		pipelineDepth = DefaultPipelineDepth
 	}
 
+	// FIX: Calculate exact length for the final piece
+	pieceLength := t.Info.PieceLength
+	totalPieces := len(t.Info.Pieces) / 20
+	
+	if int(pieceIndex) == totalPieces-1 {
+		// It's the last piece, calculate the remainder
+		pieceLength = int(t.Info.Length - int64(pieceIndex)*int64(t.Info.PieceLength))
+	}
+
 	return &Downloader{
 		PieceIndex:    pieceIndex,
 		Torrent:       t,
-		Assembler:     NewPieceAssembler(pieceIndex, uint32(t.Info.PieceLength), Blocksize),
+		Assembler:     NewPieceAssembler(pieceIndex, uint32(pieceLength), Blocksize),
 		PipelineDepth: pipelineDepth,
 		Writer:        w,
 	}
