@@ -221,10 +221,13 @@ func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *sto
 	pid := generatePeerID()
 	p := peer.Peer{IP: pe.IP, Port: pe.Port}
 
+	fmt.Printf("Worker %s: Attempting TCP connection and handshake...\n", p.IP)
 	con, reserved, e := peer.PerformHandshake(p, tor.InfoHash, pid)
 	if e != nil {
+		fmt.Printf("Worker %s: Handshake failed: %v\n", p.IP, e)
 		return
 	}
+	fmt.Printf("Worker %s: Handshake successful!\n", p.IP)
 	defer con.Close()
 
 	session := peer.NewPeerSession(con, p, tor.InfoHash, pid, reserved)

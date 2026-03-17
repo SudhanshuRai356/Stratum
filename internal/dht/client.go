@@ -93,46 +93,45 @@ func (c *Client) Bootstrap(bootstrapNodes []Node) error {
 		bootstrapNodes = GetDefaultBootstrapNodes()
 	}
 
-	fmt.Printf("Bootstrapping DHT with %d nodes...\n", len(bootstrapNodes))
+	fmt.Printf("Bootstrapping DHT with %d routers...\n", len(bootstrapNodes))
 
-	// Ping nodes concurrently
+	// INSTEAD OF PINGING, WE SEND A FIND_NODE TO GET REAL PEERS IMMEDIATELY
 	type result struct {
-		node    Node
-		success bool
+		node  Node
+		nodes []Node
 	}
 	resultChan := make(chan result, len(bootstrapNodes))
 
 	for _, node := range bootstrapNodes {
 		go func(n Node) {
-			if err := n.Validate(); err != nil {
-				resultChan <- result{n, false}
-				return
-			}
-
-			// Ping the node to verify it's alive
-			success := c.Ping(n)
-			resultChan <- result{n, success}
+			// Ask the bootstrap router for nodes close to our own ID
+			foundNodes := c.FindNode(n, c.nodeID)
+			resultChan <- result{n, foundNodes}
 		}(node)
 	}
 
 	// Collect results
 	successCount := 0
+	addedCount := 0
 	for i := 0; i < len(bootstrapNodes); i++ {
 		res := <-resultChan
-		if res.success {
-			c.routingTable.AddNode(res.node)
+		if len(res.nodes) > 0 {
 			successCount++
+			for _, n := range res.nodes {
+				c.routingTable.AddNode(n)
+				addedCount++
+			}
 		}
 	}
 
 	if successCount == 0 {
-		return fmt.Errorf("failed to bootstrap: no nodes responded")
+		return fmt.Errorf("failed to bootstrap: no routers responded")
 	}
 
-	// Find nodes close to our own ID to populate routing table
+	// Now that we have real nodes in the table, do a deeper network crawl
 	go c.findNode(c.nodeID)
 
-	fmt.Printf("Successfully bootstrapped with %d nodes\n", successCount)
+	fmt.Printf("Successfully bootstrapped with %d routers, discovered %d real nodes\n", successCount, addedCount)
 	return nil
 }
 
@@ -298,8 +297,8 @@ func (c *Client) GetPeers(infoHash [20]byte) []string {
 		wg.Wait()
 
 		mu.Lock()
-		// If we found some peers, we can stop diving deeper to save time
-		if len(allPeers) > 0 {
+		// Do not stop at 1 peer. Stop diving only if we have a healthy swarm to try.
+		if len(allPeers) >= 50 {
 			mu.Unlock()
 			break
 		}
