@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"container/heap"
+	"context"
 	"crypto/sha1"
 	"flag"
 	"fmt"
@@ -14,15 +15,18 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/Kushal-39/Stratum/internal/api"
+	"github.com/Kushal-39/Stratum/internal/app"
 	"github.com/Kushal-39/Stratum/internal/dht"
 	"github.com/Kushal-39/Stratum/internal/peer"
 	"github.com/Kushal-39/Stratum/internal/storage"
 	"github.com/Kushal-39/Stratum/internal/torrent"
 	"github.com/Kushal-39/Stratum/internal/tracker"
+	"github.com/Kushal-39/Stratum/internal/ui/tui"
 )
 
 func HasPiece(bitfield []byte, pieceIndex uint32) bool {
@@ -209,8 +213,13 @@ func VerifyPiece(writer *storage.Writer, pieceIndex uint32, tor *torrent.Torrent
 	}
 	return true
 }
-func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *storage.Writer, seeder *peer.Seeder, hub *api.Hub, wg *sync.WaitGroup) {
+func worker(ctx context.Context, pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *storage.Writer, seeder *peer.Seeder, hub *api.Hub, bus *app.EventBus, wg *sync.WaitGroup) {
 	defer wg.Done()
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
 
 	// 1. CHECK REPUTATION BEFORE CONNECTING
 	if pm.IsBanned(pe.IP) {
@@ -228,6 +237,15 @@ func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *sto
 		return
 	}
 	fmt.Printf("Worker %s: Handshake successful!\n", p.IP)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = con.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
 	defer con.Close()
 
 	session := peer.NewPeerSession(con, p, tor.InfoHash, pid, reserved)
@@ -238,6 +256,12 @@ func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *sto
 	pm.update_avail(session.Bitfield)
 
 	for !pm.allDone() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		// Double check ban status (in case they were banned by another worker)
 		if pm.IsBanned(pe.IP) {
 			return
@@ -286,6 +310,20 @@ func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *sto
 				case hub.Broadcast <- state:
 				default:
 				}
+
+				if bus != nil {
+					bus.Publish(app.RuntimeEvent{
+						Type:       app.EventPieceCompleted,
+						Timestamp:  time.Now(),
+						Severity:   app.SeverityInfo,
+						State:      state,
+						Message:    fmt.Sprintf("piece completed %d from %s", piece_index, p.IP),
+						PieceIndex: piece_index,
+						Peer:       p.IP,
+						Completed:  completed,
+						Total:      total,
+					})
+				}
 			}
 
 			go func() {
@@ -308,7 +346,17 @@ func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *sto
 
 			pm.ReportBadPeer(p.IP)            // Add strike / Ban
 			pm.mark_piece_failed(piece_index) // Reset piece so honest peers can download it
-			return                            // Disconnect immediately
+			if bus != nil {
+				bus.Publish(app.RuntimeEvent{
+					Type:       app.EventPeerBanned,
+					Timestamp:  time.Now(),
+					Severity:   app.SeverityWarn,
+					PieceIndex: piece_index,
+					Peer:       p.IP,
+					Message:    fmt.Sprintf("banned peer %s for corrupt piece %d", p.IP, piece_index),
+				})
+			}
+			return // Disconnect immediately
 		}
 	}
 }
@@ -316,14 +364,43 @@ func worker(pe tracker.Peer, pm *PieceManager, tor *torrent.Torrent, writer *sto
 const PipelineDepth = 5
 const ReannounceInterval = 30 * time.Second
 
+type ActiveRoundCanceller struct {
+	mu     sync.Mutex
+	cancel context.CancelFunc
+}
+
+func (a *ActiveRoundCanceller) Set(fn context.CancelFunc) {
+	a.mu.Lock()
+	a.cancel = fn
+	a.mu.Unlock()
+}
+
+func (a *ActiveRoundCanceller) Cancel() {
+	a.mu.Lock()
+	if a.cancel != nil {
+		a.cancel()
+	}
+	a.mu.Unlock()
+}
+
+func (a *ActiveRoundCanceller) Clear() {
+	a.mu.Lock()
+	a.cancel = nil
+	a.mu.Unlock()
+}
+
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	outDir := flag.String("o", ".", "output directory")
+	uiMode := flag.String("ui", "cli", "ui mode: cli or tui")
 	flag.Parse()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	if flag.NArg() < 1 {
-		fmt.Println("Usage: stratum [-o output_dir] <path-to-torrent-file-or-magnet-link>")
+		fmt.Println("Usage: stratum [-o output_dir] [--ui=cli|tui] <path-to-.torrent-file-or-magnet-link>")
 		os.Exit(1)
 	}
 
@@ -336,13 +413,22 @@ func main() {
 		fmt.Println("Detected magnet link, fetching metadata...")
 		t, err = handleMagnetLink(input)
 		if err != nil {
-			panic(fmt.Sprintf("Failed to get metadata from magnet link: %v", err))
+			fmt.Fprintf(os.Stderr, "failed to get metadata from magnet link: %v\n", err)
+			os.Exit(1)
 		}
 	} else {
+		if !strings.HasSuffix(strings.ToLower(input), ".torrent") {
+			fmt.Fprintf(os.Stderr, "invalid input: %q\n", input)
+			fmt.Fprintln(os.Stderr, "expected a .torrent file path or a magnet URI")
+			fmt.Fprintln(os.Stderr, "example: go run ./cmd/stratum --ui=tui ./archlinux-2026.03.01-x86_64.iso.torrent")
+			os.Exit(1)
+		}
+
 		// Parse torrent file
 		t, err = torrent.ParseTorrent(input)
 		if err != nil {
-			panic(err)
+			fmt.Fprintf(os.Stderr, "failed to parse torrent file %q: %v\n", input, err)
+			os.Exit(1)
 		}
 	}
 
@@ -427,33 +513,28 @@ func main() {
 	//sub routine to save using the exit
 	go func() {
 		<-sig_chan //wait for the interrupt signal we are getting from the notify
-		fmt.Println("\nReceived interrupt signal, saving DHT nodes and exiting...")
-		if dhtClient != nil {
-			dhtClient.Stop()
-			dht_nodes = dhtClient.GetRoutingTable().GetAllNodes()
-		}
-		if len(dht_nodes) > 0 {
-			err = dht.SaveNodes(dht_node_path, dht_nodes)
-			if err != nil {
-				fmt.Printf("Failed to save DHT nodes: %v\n", err)
-			}
-		}
-		os.Exit(0)
+		fmt.Println("\nReceived interrupt signal, shutting down...")
+		cancel()
 	}()
 
 	ticker := time.NewTicker(10 * time.Minute) //interval for automatic saving of dht nodes data
 	defer ticker.Stop()
 	//subroutine to save using the ticker
 	go func() {
-		for range ticker.C {
-			if dhtClient != nil {
-				dht_nodes = dhtClient.GetRoutingTable().GetAllNodes()
-			}
-			if len(dht_nodes) > 0 {
-				fmt.Println("Auto-saving DHT nodes...")
-				err = dht.SaveNodes(dht_node_path, dht_nodes)
-				if err != nil {
-					fmt.Printf("Failed to save DHT nodes: %v\n", err)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if dhtClient != nil {
+					dht_nodes = dhtClient.GetRoutingTable().GetAllNodes()
+				}
+				if len(dht_nodes) > 0 {
+					fmt.Println("Auto-saving DHT nodes...")
+					err = dht.SaveNodes(dht_node_path, dht_nodes)
+					if err != nil {
+						fmt.Printf("Failed to save DHT nodes: %v\n", err)
+					}
 				}
 			}
 		}
@@ -539,8 +620,105 @@ func main() {
 		}
 	}()
 
+	eventBus := app.NewEventBus(128)
+	controls := make(chan app.ControlCommand, 16)
+	var stdoutRestore *os.File
+
+	if *uiMode == "tui" {
+		devNull, openErr := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if openErr == nil {
+			stdoutRestore = os.Stdout
+			os.Stdout = devNull
+			defer func() {
+				os.Stdout = stdoutRestore
+				_ = devNull.Close()
+			}()
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: failed to quiet stdout for TUI mode: %v\n", openErr)
+		}
+
+		go func() {
+			if err := tui.Run(ctx, eventBus, controls); err != nil {
+				fmt.Fprintf(os.Stderr, "tui exited with error: %v\n", err)
+				cancel()
+			}
+		}()
+	}
+
+	var pauseMu sync.RWMutex
+	paused := false
+	isPaused := func() bool {
+		pauseMu.RLock()
+		defer pauseMu.RUnlock()
+		return paused
+	}
+	activeRound := &ActiveRoundCanceller{}
+
+	var currentRound atomic.Int64
+	var currentPeers atomic.Int64
+	currentPeers.Store(int64(len(peers)))
+
 	// 3. Pass loaded state to Manager
 	pm := NewPieceManager(totalPieces, completedPieces, completedCount)
+
+	saveStateSnapshot := func(reason string) {
+		pm.mu.Lock()
+		stateCopy := make([]bool, len(pm.completed))
+		copy(stateCopy, pm.completed)
+		completedNow := pm.completedCount
+		totalNow := pm.totalPieces
+		pm.mu.Unlock()
+
+		if err := writer.SaveState(stateCopy); err != nil {
+			eventBus.Publish(app.RuntimeEvent{
+				Type:      app.EventError,
+				Timestamp: time.Now(),
+				Severity:  app.SeverityError,
+				Message:   fmt.Sprintf("failed to save state during %s: %v", reason, err),
+			})
+			return
+		}
+
+		eventBus.Publish(app.RuntimeEvent{
+			Type:      app.EventInfo,
+			Timestamp: time.Now(),
+			Severity:  app.SeverityInfo,
+			Message:   fmt.Sprintf("%s: state saved (%d/%d)", reason, completedNow, totalNow),
+			Completed: completedNow,
+			Total:     totalNow,
+		})
+	}
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case cmd := <-controls:
+				switch cmd.Type {
+				case app.CmdPause:
+					pauseMu.Lock()
+					paused = true
+					pauseMu.Unlock()
+					activeRound.Cancel()
+					saveStateSnapshot("pause")
+					eventBus.Publish(app.RuntimeEvent{Type: app.EventInfo, Timestamp: time.Now(), Severity: app.SeverityWarn, Message: "paused: active workers stopped"})
+				case app.CmdResume:
+					pauseMu.Lock()
+					paused = false
+					pauseMu.Unlock()
+					eventBus.Publish(app.RuntimeEvent{Type: app.EventInfo, Timestamp: time.Now(), Severity: app.SeverityInfo, Message: "resumed: scheduling new workers"})
+				case app.CmdReannounce:
+					eventBus.Publish(app.RuntimeEvent{Type: app.EventInfo, Timestamp: time.Now(), Severity: app.SeverityInfo, Message: "reannounce requested (applies next round)"})
+				case app.CmdStop:
+					activeRound.Cancel()
+					saveStateSnapshot("stop")
+					eventBus.Publish(app.RuntimeEvent{Type: app.EventInfo, Timestamp: time.Now(), Severity: app.SeverityWarn, Message: "stop requested"})
+					cancel()
+				}
+			}
+		}
+	}()
 
 	// === SEEDING ===
 	fmt.Println("\n=== Starting seeder... ===")
@@ -563,10 +741,101 @@ func main() {
 		}
 	}
 
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
+		lastCompleted := completedCount
+		lastUploaded := int64(0)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				completed, total := pm.getProgress()
+				deltaPieces := completed - lastCompleted
+				if deltaPieces < 0 {
+					deltaPieces = 0
+				}
+				downloadBPS := float64(deltaPieces * t.Info.PieceLength)
+				lastCompleted = completed
+
+				uploadBPS := float64(0)
+				if seeder != nil {
+					uploadedNow := seeder.GetUploaded()
+					deltaUpload := uploadedNow - lastUploaded
+					if deltaUpload < 0 {
+						deltaUpload = 0
+					}
+					uploadBPS = float64(deltaUpload)
+					lastUploaded = uploadedNow
+				}
+
+				status := "Downloading"
+				progress := 0.0
+				if total > 0 {
+					progress = float64(completed) / float64(total) * 100.0
+				}
+				if completed >= total && total > 0 {
+					status = "Seeding"
+				}
+
+				state := api.TorrentState{
+					InfoHash:       fmt.Sprintf("%x", t.InfoHash),
+					Name:           t.Info.Name,
+					Progress:       progress,
+					DownloadSpeed:  downloadBPS,
+					State:          status,
+					ConnectedPeers: int(currentPeers.Load()),
+				}
+
+				if hub != nil {
+					select {
+					case hub.Broadcast <- state:
+					default:
+					}
+				}
+
+				eventBus.Publish(app.RuntimeEvent{
+					Type:        app.EventState,
+					Timestamp:   time.Now(),
+					Severity:    app.SeverityInfo,
+					State:       state,
+					Round:       int(currentRound.Load()),
+					Completed:   completed,
+					Total:       total,
+					ActivePeers: int(currentPeers.Load()),
+					DownloadBPS: downloadBPS,
+					UploadBPS:   uploadBPS,
+				})
+			}
+		}
+	}()
+
 	roundNum := 0
+downloadLoop:
 
 	for !pm.allDone() {
+		select {
+		case <-ctx.Done():
+			break downloadLoop
+		default:
+		}
+
+		if isPaused() {
+			eventBus.Publish(app.RuntimeEvent{Type: app.EventInfo, Timestamp: time.Now(), Severity: app.SeverityWarn, Message: "download paused"})
+		}
+		for isPaused() {
+			select {
+			case <-ctx.Done():
+				break downloadLoop
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
+
 		roundNum++
+		currentRound.Store(int64(roundNum))
 		fmt.Printf("\n=== Round %d: Remaining pieces: %d/%d ===\n", roundNum, pm.remainingPieces(), totalPieces)
 
 		// Always announce at the start of each round to get fresh peers
@@ -604,23 +873,29 @@ func main() {
 		}
 
 		if len(peers) == 0 {
+			currentPeers.Store(0)
 			fmt.Println("No peers returned by tracker or DHT. Retrying in 10 seconds...")
 			time.Sleep(10 * time.Second)
 			continue // Retry the loop, do NOT exit
 		}
 
+		currentPeers.Store(int64(len(peers)))
 		fmt.Printf("Total peers this round: %d\n", len(peers))
 
 		// Start workers for all available peers
 		var wg sync.WaitGroup
+		roundCtx, roundCancel := context.WithCancel(ctx)
+		activeRound.Set(roundCancel)
 		for _, pe := range peers {
 			wg.Add(1)
-			go worker(pe, pm, t, writer, seeder, hub, &wg)
+			go worker(roundCtx, pe, pm, t, writer, seeder, hub, eventBus, &wg)
 		}
 
 		// Wait for all workers to finish this round
 		// Worker exit does NOT end the program - we just wait and loop again
 		wg.Wait()
+		roundCancel()
+		activeRound.Clear()
 
 		// Log round completion
 		fmt.Printf("\nRound %d finished. Completed: %d/%d pieces\n", roundNum, pm.totalPieces-pm.remainingPieces(), pm.totalPieces)
@@ -635,6 +910,10 @@ func main() {
 
 		// Brief pause before next round to avoid hammering tracker/peers
 		time.Sleep(2 * time.Second)
+	}
+
+	if ctx.Err() != nil && !pm.allDone() {
+		fmt.Println("Download interrupted before completion")
 	}
 	fmt.Println("\n=== All pieces downloaded successfully! ===")
 
@@ -664,15 +943,35 @@ func main() {
 		case hub.Broadcast <- state:
 		default:
 		}
+		eventBus.Publish(app.RuntimeEvent{Type: app.EventState, Timestamp: time.Now(), Severity: app.SeverityInfo, State: state, Message: "entered seeding mode", Completed: totalPieces, Total: totalPieces, ActivePeers: int(currentPeers.Load())})
 	}
 
 	// Keep process alive and stay in the tracker's peer list
 	seedTicker := time.NewTicker(30 * time.Minute)
 	defer seedTicker.Stop()
 
-	for range seedTicker.C {
-		fmt.Println("Seeding: Re-announcing to swarm...")
-		_, _ = tracker.Announce(t, 0)
+	for {
+		select {
+		case <-ctx.Done():
+			if seeder != nil {
+				seeder.Stop()
+			}
+			if dhtClient != nil {
+				dhtClient.Stop()
+				dht_nodes = dhtClient.GetRoutingTable().GetAllNodes()
+			}
+			if len(dht_nodes) > 0 {
+				err = dht.SaveNodes(dht_node_path, dht_nodes)
+				if err != nil {
+					fmt.Printf("Failed to save DHT nodes: %v\n", err)
+				}
+			}
+			fmt.Println("Shutdown complete")
+			return
+		case <-seedTicker.C:
+			fmt.Println("Seeding: Re-announcing to swarm...")
+			_, _ = tracker.Announce(t, 0)
+		}
 	}
 
 }
