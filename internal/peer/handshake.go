@@ -54,7 +54,7 @@ func sendHandshake(conn net.Conn, infoHash [20]byte, peerID [20]byte) error {
 func receiveHandshake(conn net.Conn, expected_infoHash [20]byte) ([]byte, error) {
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	resp := make([]byte, handshakeLen)
-	
+
 	// Use ReadFull to ensure we get all 68 bytes
 	_, err := io.ReadFull(conn, resp)
 	if err != nil {
@@ -71,7 +71,7 @@ func receiveHandshake(conn net.Conn, expected_infoHash [20]byte) ([]byte, error)
 	if !bytes.Equal(peerInfoHash, expected_infoHash[:]) {
 		return nil, errors.New("info hash mismatch")
 	}
-	
+
 	// RETURN THE RESERVED BYTES (Indices 20-28)
 	return resp[20:28], nil
 }

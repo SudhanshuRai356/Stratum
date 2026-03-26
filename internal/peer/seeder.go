@@ -341,7 +341,7 @@ func (s *Seeder) sendPiece(conn net.Conn, pieceIndex, begin, length uint32) erro
 	}
 
 	// Read the data from disk
-	offset := int64(pieceIndex)*int64(s.tor.Info.PieceLength) + int64(begin)
+	offset := s.tor.PieceOffset(int(pieceIndex)) + int64(begin)
 	data := make([]byte, length)
 	_, err := s.writer.ReadAt(data, offset)
 	if err != nil {

@@ -65,14 +65,14 @@ func AnnounceUDP(trackerURL string, t *torrent.Torrent, left int64) ([]Peer, err
 	copy(announce[16:36], t.InfoHash[:])
 	copy(announce[36:56], []byte("-ST0001-123456789012"))
 
-	binary.BigEndian.PutUint64(announce[56:64], 0)                     // downloaded
-	binary.BigEndian.PutUint64(announce[64:72], uint64(left)) // left
-	binary.BigEndian.PutUint64(announce[72:80], 0)                     // uploaded
-	binary.BigEndian.PutUint32(announce[80:84], 0)                     // event
-	binary.BigEndian.PutUint32(announce[84:88], 0)                     // IP
-	binary.BigEndian.PutUint32(announce[88:92], rand.Uint32())         // key
-	binary.BigEndian.PutUint32(announce[92:96], 0xFFFFFFFF)            // num_want
-	binary.BigEndian.PutUint16(announce[96:98], 6881)                  // port
+	binary.BigEndian.PutUint64(announce[56:64], 0)             // downloaded
+	binary.BigEndian.PutUint64(announce[64:72], uint64(left))  // left
+	binary.BigEndian.PutUint64(announce[72:80], 0)             // uploaded
+	binary.BigEndian.PutUint32(announce[80:84], 0)             // event
+	binary.BigEndian.PutUint32(announce[84:88], 0)             // IP
+	binary.BigEndian.PutUint32(announce[88:92], rand.Uint32()) // key
+	binary.BigEndian.PutUint32(announce[92:96], 0xFFFFFFFF)    // num_want
+	binary.BigEndian.PutUint16(announce[96:98], 6881)          // port
 
 	if _, err := conn.Write(announce); err != nil {
 		return nil, err

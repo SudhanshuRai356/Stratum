@@ -1,13 +1,13 @@
 package storage
 
-import(
+import (
 	"fmt"
 	"os"
 )
 
-func(w *Writer) SaveState(completed []bool) error{
-	statePath:=w.path+".state"
-	numBytes:= (len(completed) + 7) / 8
+func (w *Writer) SaveState(completed []bool) error {
+	statePath := w.path + ".state"
+	numBytes := (len(completed) + 7) / 8
 	bitfield := make([]byte, numBytes)
 
 	for i, done := range completed {
@@ -25,14 +25,14 @@ func(w *Writer) SaveState(completed []bool) error{
 // Note: It does NOT verify hashes (main logic should do that).
 func (w *Writer) LoadState(totalPieces int) ([]bool, error) {
 	statePath := w.path + ".state"
-	
+
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		return nil, err // File doesn't exist (fresh download)
 	}
 
 	completed := make([]bool, totalPieces)
-	
+
 	// Expand bytes back to bools
 	for i := 0; i < totalPieces; i++ {
 		byteIdx := i / 8
@@ -42,7 +42,7 @@ func (w *Writer) LoadState(totalPieces int) ([]bool, error) {
 			completed[i] = true
 		}
 	}
-	
+
 	fmt.Printf("State loaded from %s\n", statePath)
 	return completed, nil
 }
