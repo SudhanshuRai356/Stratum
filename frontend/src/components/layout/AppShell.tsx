@@ -11,19 +11,25 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import type { DashboardNotification } from "@/lib/types";
 import Sidebar from "./Sidebar";
 import Topbar from "./Topbar";
 
 type AppShellProps = {
   children: React.ReactNode;
+  title?: string;
+  notifications?: DashboardNotification[];
 };
 
 const SIDEBAR_STORAGE_KEY = "stratum.sidebar.collapsed";
 
-export default function AppShell({ children }: AppShellProps) {
+export default function AppShell({ children, title = "Overview", notifications = [] }: AppShellProps) {
   const [collapsed, setCollapsed] = useState(() => {
     if (typeof window === "undefined") {
       return false;
+    }
+    if (window.innerWidth < 1024) {
+      return true;
     }
     return localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1";
   });
@@ -53,7 +59,7 @@ export default function AppShell({ children }: AppShellProps) {
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-[#010409] text-zinc-100">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_15%_15%,rgba(14,165,233,0.18),transparent_38%),radial-gradient(circle_at_80%_0%,rgba(6,182,212,0.08),transparent_40%),linear-gradient(180deg,#02050a_0%,#03070e_45%,#010409_100%)]" />
+      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,#010409_0%,#03070e_52%,#02060c_100%)]" />
 
       <div className="relative flex min-h-screen">
         <Sidebar
@@ -65,8 +71,8 @@ export default function AppShell({ children }: AppShellProps) {
         />
 
         <div className="flex min-h-screen flex-1 flex-col">
-          <Topbar title="Overview" />
-          <main className="flex-1 overflow-y-auto px-6 py-6 md:px-8">{children}</main>
+          <Topbar title={title} notifications={notifications} />
+          <main className="flex-1 overflow-y-auto px-4 py-4 md:px-7 md:py-6">{children}</main>
         </div>
       </div>
     </div>
