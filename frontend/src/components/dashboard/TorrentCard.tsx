@@ -1,4 +1,5 @@
 import type { TorrentState } from "@/lib/types";
+import SourceBadge from "@/components/ui/SourceBadge";
 import { formatBytes, formatEta, formatPercent, formatSpeed } from "@/lib/format";
 
 type TorrentCardProps = {
@@ -32,6 +33,7 @@ export default function TorrentCard({ torrent }: TorrentCardProps) {
   const seeders = torrent.seeders ?? Math.max(0, Math.floor(peers * 0.65));
   const leechers = torrent.leechers ?? Math.max(0, peers - seeders);
   const health = peers > 0 ? Math.min(100, 35 + seeders * 2) : 0;
+  const category = torrent.category || "General";
 
   return (
     <article className="panel reveal-up rounded-xl p-4">
@@ -47,6 +49,11 @@ export default function TorrentCard({ torrent }: TorrentCardProps) {
         >
           {torrent.state || "Downloading"}
         </span>
+      </div>
+
+      <div className="mt-2 flex items-center gap-2">
+        <SourceBadge source="WS" />
+        <SourceBadge source="UI" />
       </div>
 
       <div className="mt-3 flex items-center gap-4 text-xs text-zinc-300">
@@ -72,7 +79,7 @@ export default function TorrentCard({ torrent }: TorrentCardProps) {
         <p>Size: {formatBytes(sizeBytes)}</p>
         <p>Ratio: {ratio.toFixed(2)}</p>
         <p>Health: {formatPercent(health, 0)}</p>
-        <p>Category: General</p>
+        <p>Category: {category}</p>
       </div>
     </article>
   );

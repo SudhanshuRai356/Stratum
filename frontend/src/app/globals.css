@@ -1,37 +1,112 @@
 @import "tailwindcss";
 
 :root {
-  --background: #010409;
-  --foreground: #e7eef5;
-  --surface: #04101a;
-  --surface-soft: #071826;
-  --surface-border: rgba(18, 93, 120, 0.45);
-  --brand-cyan: #24cdeb;
-  --brand-cyan-soft: rgba(36, 205, 235, 0.18);
+  --bg-void: #080a0d;
+  --bg-base: #0c0e12;
+  --bg-surface: #111318;
+  --bg-elevated: #161a21;
+  --bg-overlay: #1c2029;
+
+  --fg-main: #e9f5f5;
+  --fg-muted: #8da0a6;
+
+  --acc: #00d4b4;
+  --acc-dim: rgba(0, 212, 180, 0.12);
+  --acc-glow: rgba(0, 212, 180, 0.06);
+  --bd-accent: rgba(0, 212, 180, 0.3);
+
+  --success: #22c55e;
+  --success-bg: #0f2318;
+  --warn: #f59e0b;
+  --warn-bg: #1a1408;
+  --danger: #ef4444;
+  --danger-bg: #1a0a0a;
+
+  --bd-subtle: rgba(255, 255, 255, 0.04);
+  --bd-default: rgba(255, 255, 255, 0.08);
+  --bd-strong: rgba(255, 255, 255, 0.14);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-background: var(--bg-base);
+  --color-foreground: var(--fg-main);
   --font-sans: var(--font-display-sans);
   --font-mono: var(--font-display-mono);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background:
+    radial-gradient(circle at 12% -5%, rgba(0, 212, 180, 0.08), transparent 30%),
+    radial-gradient(circle at 90% 0%, rgba(0, 212, 180, 0.05), transparent 26%),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 24px),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 24px),
+    var(--bg-base);
+  color: var(--fg-main);
   font-family: var(--font-display-sans), sans-serif;
   letter-spacing: 0.01em;
 }
 
 .panel {
-  border: 1px solid var(--surface-border);
-  background: linear-gradient(180deg, rgba(6, 20, 31, 0.92), rgba(4, 14, 24, 0.9));
-  box-shadow: inset 0 1px 0 rgba(36, 205, 235, 0.06), 0 14px 30px rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--bd-default);
+  background: var(--bg-elevated);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02), 0 16px 30px rgba(0, 0, 0, 0.26);
+  position: relative;
+  overflow: hidden;
+}
+
+.panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 100% 0%, var(--acc-glow), transparent 46%);
+  pointer-events: none;
+}
+
+.scan-lines::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.016) 0,
+    rgba(255, 255, 255, 0.016) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  opacity: 0.25;
+  pointer-events: none;
+}
+
+.chart-panel-glow::before {
+  background:
+    radial-gradient(circle at 0% 100%, rgba(16, 185, 129, 0.08), transparent 40%),
+    radial-gradient(circle at 100% 0%, rgba(0, 212, 180, 0.12), transparent 48%);
+}
+
+.chart-stage {
+  opacity: 0;
+  animation: chart-stage-in 520ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+.chart-stage-delayed {
+  animation-delay: 110ms;
+}
+
+@keyframes chart-stage-in {
+  from {
+    opacity: 0;
+    transform: translateY(7px) scale(0.995);
+    filter: saturate(0.86);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: saturate(1);
+  }
 }
 
 .reveal-up {
-  animation: reveal-up 360ms ease-out both;
+  animation: reveal-up 300ms cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
 @keyframes reveal-up {
@@ -47,7 +122,7 @@ body {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(36, 205, 235, 0.45) rgba(3, 10, 16, 0.8);
+  scrollbar-color: rgba(0, 212, 180, 0.45) rgba(8, 10, 13, 0.8);
 }
 
 ::-webkit-scrollbar {
@@ -56,10 +131,10 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(3, 10, 16, 0.8);
+  background: rgba(8, 10, 13, 0.8);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(36, 205, 235, 0.42);
+  background: rgba(0, 212, 180, 0.42);
   border-radius: 999px;
 }

@@ -602,19 +602,72 @@ func main() {
 	}
 
 	// --- NEW API SERVER SETUP ---
+	eventBus := app.NewEventBus(128)
+	controls := make(chan app.ControlCommand, 16)
+
+	var latestState atomic.Value
+	initialProgress := 0.0
+	if totalPieces > 0 {
+		initialProgress = float64(completedCount) / float64(totalPieces) * 100.0
+	}
+	latestState.Store(api.TorrentState{
+		InfoHash:       fmt.Sprintf("%x", t.InfoHash),
+		Name:           t.Info.Name,
+		Progress:       initialProgress,
+		State:          "Downloading",
+		ConnectedPeers: len(peers),
+	})
+
 	fmt.Println("Starting local API bridge on 127.0.0.1:8080...")
 	fmt.Printf("API token: %s\n", api.GetAPIToken())
 	fmt.Println("Connect via: ws://127.0.0.1:8080/ws?token=" + api.GetAPIToken())
 	hub := api.NewHub()
 	go hub.Run()
 	go func() {
-		if err := api.ListenAndServe(hub); err != nil {
+		if err := api.ListenAndServeWithConfig(api.ServerConfig{
+			Addr: "127.0.0.1:8080",
+			Hub:  hub,
+			HandleControl: func(payload api.ControlPayload) (string, error) {
+				action := strings.ToLower(strings.TrimSpace(payload.Action))
+				var cmdType app.ControlCommandType
+				switch action {
+				case "pause":
+					cmdType = app.CmdPause
+				case "resume":
+					cmdType = app.CmdResume
+				case "reannounce":
+					cmdType = app.CmdReannounce
+				case "stop":
+					cmdType = app.CmdStop
+				default:
+					return "", fmt.Errorf("unknown action %q", payload.Action)
+				}
+
+				select {
+				case controls <- app.ControlCommand{Type: cmdType}:
+					if payload.InfoHash != "" {
+						return fmt.Sprintf("accepted %s for %s", action, payload.InfoHash), nil
+					}
+					return fmt.Sprintf("accepted %s", action), nil
+				default:
+					return "", fmt.Errorf("control queue busy")
+				}
+			},
+			GetState: func() []api.TorrentState {
+				v := latestState.Load()
+				if v == nil {
+					return []api.TorrentState{}
+				}
+				state, ok := v.(api.TorrentState)
+				if !ok {
+					return []api.TorrentState{}
+				}
+				return []api.TorrentState{state}
+			},
+		}); err != nil {
 			fmt.Printf("API Server crashed: %v\n", err)
 		}
 	}()
-
-	eventBus := app.NewEventBus(128)
-	controls := make(chan app.ControlCommand, 16)
 	var stdoutRestore *os.File
 
 	if *uiMode == "tui" {
@@ -782,6 +835,7 @@ func main() {
 					State:          status,
 					ConnectedPeers: int(currentPeers.Load()),
 				}
+				latestState.Store(state)
 
 				if hub != nil {
 					select {
@@ -932,6 +986,7 @@ downloadLoop:
 			Progress: 100.0,
 			State:    "Seeding",
 		}
+		latestState.Store(state)
 		select {
 		case hub.Broadcast <- state:
 		default:
