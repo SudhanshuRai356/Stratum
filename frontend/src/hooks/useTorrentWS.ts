@@ -30,6 +30,55 @@ const DEFAULT_RECONNECT_DELAY_MS = 1500;
 const HISTORY_WINDOW = 60;
 const TOTALS_STORAGE_KEY = "stratum.dashboard.totals";
 const MAX_NOTIFICATIONS = 25;
+const TRANSIENT_ZERO_GRACE_MS = 3500;
+
+function isActiveState(state: string | undefined): boolean {
+  return state === "Downloading" || state === "Seeding";
+}
+
+function stabilizeOptionalNumber(nextValue: number | undefined, prevValue: number | undefined): number | undefined {
+  if (typeof nextValue === "number") {
+    return nextValue;
+  }
+  return prevValue;
+}
+
+function stabilizeTransientZero(
+  nextValue: number | undefined,
+  prevValue: number | undefined,
+  active: boolean,
+  now: number,
+  previousSeenAt: number | undefined,
+): number | undefined {
+  if (typeof nextValue !== "number") {
+    return prevValue;
+  }
+  if (!active) {
+    return nextValue;
+  }
+  if (nextValue > 0) {
+    return nextValue;
+  }
+  if (typeof prevValue === "number" && prevValue > 0 && typeof previousSeenAt === "number") {
+    if (now - previousSeenAt <= TRANSIENT_ZERO_GRACE_MS) {
+      return prevValue;
+    }
+  }
+  return nextValue;
+}
+
+function toDefaultWSURL(apiBase: string): string {
+  try {
+    const parsed = new URL(apiBase);
+    parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+    parsed.pathname = "/ws";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return "ws://127.0.0.1:8080/ws";
+  }
+}
 
 function safeParseState(raw: string): TorrentState | null {
   try {
@@ -57,44 +106,76 @@ function makeNotification(message: string, level: DashboardNotification["level"]
 
 export function useTorrentWS(options?: UseTorrentWSOptions): UseTorrentWSResult {
   const reconnectDelayMs = options?.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
-  const wsUrl = options?.url ?? process.env.NEXT_PUBLIC_TORRENT_WS_URL ?? "ws://127.0.0.1:8080/ws";
+  const apiBase = process.env.NEXT_PUBLIC_GO_API_URL ?? "http://127.0.0.1:8080";
+  const defaultWsUrl = options?.url ?? process.env.NEXT_PUBLIC_TORRENT_WS_URL ?? toDefaultWSURL(apiBase);
 
-  const token = process.env.NEXT_PUBLIC_TORRENT_API_TOKEN;
-  const effectiveUrl = useMemo(() => {
-    if (!token || wsUrl.includes("token=")) {
-      return wsUrl;
+  const envToken = process.env.NEXT_PUBLIC_TORRENT_API_TOKEN;
+  const [resolvedWsUrl, setResolvedWsUrl] = useState(defaultWsUrl);
+  const [resolvedToken, setResolvedToken] = useState<string | null>(envToken ?? null);
+
+  useEffect(() => {
+    if (envToken) {
+      return;
     }
-    const separator = wsUrl.includes("?") ? "&" : "?";
-    return `${wsUrl}${separator}token=${encodeURIComponent(token)}`;
-  }, [token, wsUrl]);
+
+    let cancelled = false;
+    const controller = new AbortController();
+
+    const discoverAuth = async () => {
+      try {
+        const res = await fetch(`${apiBase.replace(/\/$/, "")}/api/ws-auth`, {
+          method: "GET",
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          return;
+        }
+        const payload = (await res.json()) as { token?: string; ws_url?: string };
+        if (cancelled) {
+          return;
+        }
+        if (payload.ws_url) {
+          setResolvedWsUrl(payload.ws_url);
+        } else {
+          setResolvedWsUrl(defaultWsUrl);
+        }
+        if (payload.token) {
+          setResolvedToken(payload.token);
+        }
+      } catch {
+        if (!cancelled) {
+          setResolvedWsUrl(defaultWsUrl);
+        }
+      }
+    };
+
+    discoverAuth();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [apiBase, defaultWsUrl, envToken]);
+
+  const effectiveUrl = useMemo(() => {
+    if (!resolvedToken || resolvedWsUrl.includes("token=")) {
+      return resolvedWsUrl;
+    }
+    const separator = resolvedWsUrl.includes("?") ? "&" : "?";
+    return `${resolvedWsUrl}${separator}token=${encodeURIComponent(resolvedToken)}`;
+  }, [resolvedToken, resolvedWsUrl]);
 
   const reconnectTimerRef = useRef<number | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const latestRef = useRef<TorrentState | null>(null);
+  const torrentsRef = useRef<Record<string, TorrentState>>({});
+  const seenAtRef = useRef<Map<string, number>>(new Map());
   const previousStateRef = useRef<Map<string, string>>(new Map());
 
   const [status, setStatus] = useState<WebSocketConnectionStatus>("idle");
   const [latest, setLatest] = useState<TorrentState | null>(null);
   const [torrentsMap, setTorrentsMap] = useState<Record<string, TorrentState>>({});
   const [history, setHistory] = useState<SpeedHistoryPoint[]>([]);
-  const [totals, setTotals] = useState<DashboardTotals>(() => {
-    if (typeof window === "undefined") {
-      return { downloadedBytes: 0, uploadedBytes: 0 };
-    }
-    try {
-      const raw = localStorage.getItem(TOTALS_STORAGE_KEY);
-      if (!raw) {
-        return { downloadedBytes: 0, uploadedBytes: 0 };
-      }
-      const parsed = JSON.parse(raw) as DashboardTotals;
-      return {
-        downloadedBytes: Number.isFinite(parsed.downloadedBytes) ? parsed.downloadedBytes : 0,
-        uploadedBytes: Number.isFinite(parsed.uploadedBytes) ? parsed.uploadedBytes : 0,
-      };
-    } catch {
-      return { downloadedBytes: 0, uploadedBytes: 0 };
-    }
-  });
+  const [totals, setTotals] = useState<DashboardTotals>({ downloadedBytes: 0, uploadedBytes: 0 });
   const [notifications, setNotifications] = useState<DashboardNotification[]>([]);
   const [lastMessageAt, setLastMessageAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -106,6 +187,32 @@ export function useTorrentWS(options?: UseTorrentWSOptions): UseTorrentWSResult 
   };
 
   useEffect(() => {
+    let rafId = 0;
+    try {
+      const raw = localStorage.getItem(TOTALS_STORAGE_KEY);
+      if (!raw) {
+        return;
+      }
+      const parsed = JSON.parse(raw) as DashboardTotals;
+      const nextTotals = {
+        downloadedBytes: Number.isFinite(parsed.downloadedBytes) ? parsed.downloadedBytes : 0,
+        uploadedBytes: Number.isFinite(parsed.uploadedBytes) ? parsed.uploadedBytes : 0,
+      };
+      rafId = window.requestAnimationFrame(() => {
+        setTotals(nextTotals);
+      });
+    } catch {
+      // Ignore persistence errors in private or restricted contexts.
+    }
+
+    return () => {
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     try {
       localStorage.setItem(TOTALS_STORAGE_KEY, JSON.stringify(totals));
     } catch {
@@ -114,15 +221,36 @@ export function useTorrentWS(options?: UseTorrentWSOptions): UseTorrentWSResult 
   }, [totals]);
 
   useEffect(() => {
-    const tick = window.setInterval(() => {
-      const active = latestRef.current;
-      if (!active) {
-        return;
-      }
+    torrentsRef.current = torrentsMap;
+  }, [torrentsMap]);
 
-      const peers = Math.max(0, active.connected_peers || 0);
-      const downloadBps = Math.max(0, active.download_speed || 0);
-      const uploadBps = Math.max(0, active.upload_speed || Math.max(0, downloadBps * 0.12));
+  useEffect(() => {
+    const tick = window.setInterval(() => {
+      const activeTorrents = Object.values(torrentsRef.current).filter((torrent) => isActiveState(torrent.state));
+
+      const peers = activeTorrents.reduce((sum, torrent) => sum + Math.max(0, torrent.connected_peers || 0), 0);
+      const seeders = activeTorrents.reduce((sum, torrent) => {
+        if (typeof torrent.seeders === "number") {
+          return sum + Math.max(0, torrent.seeders);
+        }
+        return sum + Math.max(0, Math.floor((torrent.connected_peers || 0) * 0.65));
+      }, 0);
+      const leechers = activeTorrents.reduce((sum, torrent) => {
+        if (typeof torrent.leechers === "number") {
+          return sum + Math.max(0, torrent.leechers);
+        }
+        const peerCount = Math.max(0, torrent.connected_peers || 0);
+        const estimatedSeeders = Math.max(0, Math.floor(peerCount * 0.65));
+        return sum + Math.max(0, peerCount - estimatedSeeders);
+      }, 0);
+      const downloadBps = activeTorrents.reduce((sum, torrent) => sum + Math.max(0, torrent.download_speed || 0), 0);
+      const uploadBps = activeTorrents.reduce((sum, torrent) => {
+        const upload = torrent.upload_speed;
+        if (typeof upload === "number") {
+          return sum + Math.max(0, upload);
+        }
+        return sum + Math.max(0, (torrent.download_speed || 0) * 0.12);
+      }, 0);
 
       // Estimate utilization until backend exposes direct runtime metrics.
       const cpuPercent = Math.min(100, 10 + (downloadBps / (1024 * 1024)) * 12 + peers * 0.6);
@@ -134,6 +262,8 @@ export function useTorrentWS(options?: UseTorrentWSOptions): UseTorrentWSResult 
           downloadBps,
           uploadBps,
           peers,
+          seeders,
+          leechers,
           cpuPercent,
           diskPercent,
         };
@@ -192,9 +322,60 @@ export function useTorrentWS(options?: UseTorrentWSOptions): UseTorrentWSResult 
           return;
         }
 
+        const now = Date.now();
+        const previouslySeenAt = seenAtRef.current.get(parsed.info_hash);
+
         latestRef.current = parsed;
         setLatest(parsed);
-        setTorrentsMap((prev) => ({ ...prev, [parsed.info_hash]: parsed }));
+        setTorrentsMap((prev) => {
+          const previousTorrent = prev[parsed.info_hash];
+          const active = isActiveState(parsed.state);
+
+          const stabilized: TorrentState = {
+            ...previousTorrent,
+            ...parsed,
+            total_downloaded: stabilizeOptionalNumber(parsed.total_downloaded, previousTorrent?.total_downloaded),
+            total_uploaded: stabilizeOptionalNumber(parsed.total_uploaded, previousTorrent?.total_uploaded),
+            size_bytes: stabilizeOptionalNumber(parsed.size_bytes, previousTorrent?.size_bytes),
+            connected_peers: stabilizeTransientZero(
+              parsed.connected_peers,
+              previousTorrent?.connected_peers,
+              active,
+              now,
+              previouslySeenAt,
+            ) ?? 0,
+            download_speed: stabilizeTransientZero(
+              parsed.download_speed,
+              previousTorrent?.download_speed,
+              active,
+              now,
+              previouslySeenAt,
+            ) ?? 0,
+            upload_speed: stabilizeTransientZero(
+              parsed.upload_speed,
+              previousTorrent?.upload_speed,
+              active,
+              now,
+              previouslySeenAt,
+            ),
+            seeders: stabilizeTransientZero(
+              parsed.seeders,
+              previousTorrent?.seeders,
+              active,
+              now,
+              previouslySeenAt,
+            ),
+            leechers: stabilizeTransientZero(
+              parsed.leechers,
+              previousTorrent?.leechers,
+              active,
+              now,
+              previouslySeenAt,
+            ),
+          };
+
+          return { ...prev, [parsed.info_hash]: stabilized };
+        });
 
         const prevState = previousStateRef.current.get(parsed.info_hash);
         if (prevState && prevState !== parsed.state) {
@@ -205,7 +386,8 @@ export function useTorrentWS(options?: UseTorrentWSOptions): UseTorrentWSResult 
         }
         previousStateRef.current.set(parsed.info_hash, parsed.state);
 
-        setLastMessageAt(Date.now());
+        seenAtRef.current.set(parsed.info_hash, now);
+        setLastMessageAt(now);
       };
 
       ws.onerror = () => {

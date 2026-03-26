@@ -1,6 +1,7 @@
 "use client";
 
 import { Bell, Search, Settings } from "lucide-react";
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import type { DashboardNotification } from "@/lib/types";
 
@@ -34,15 +35,16 @@ export default function Topbar({ title, notifications = [] }: TopbarProps) {
   const recent = useMemo(() => notifications.slice(0, 12), [notifications]);
 
   return (
-    <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-cyan-950/40 bg-[#02070d]/90 px-4 backdrop-blur md:px-6">
-      <div>
+    <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-white/8 bg-[var(--bg-surface)]/90 px-4 backdrop-blur md:px-6">
+      <div className="flex items-center gap-3">
+        <span className="h-2 w-2 rounded-full bg-[var(--acc)] shadow-[0_0_10px_rgba(0,212,180,0.8)]" />
         <h1 className="text-3xl font-semibold tracking-tight text-zinc-100">{title}</h1>
       </div>
 
       <div className="flex items-center gap-1.5">
         <button
           type="button"
-          className="grid h-8 w-8 place-items-center rounded-full border border-transparent text-zinc-400 transition hover:border-cyan-800/50 hover:bg-cyan-950/60 hover:text-cyan-200"
+          className="grid h-8 w-8 place-items-center rounded-full border border-transparent text-zinc-400 transition hover:border-[var(--bd-accent)] hover:bg-[var(--acc-dim)] hover:text-cyan-100"
           aria-label="Search"
         >
           <Search className="h-[15px] w-[15px]" />
@@ -52,7 +54,7 @@ export default function Topbar({ title, notifications = [] }: TopbarProps) {
           <button
             type="button"
             onClick={() => setOpen((prev) => !prev)}
-            className="relative grid h-8 w-8 place-items-center rounded-full border border-transparent text-zinc-400 transition hover:border-cyan-800/50 hover:bg-cyan-950/60 hover:text-cyan-200"
+            className="relative grid h-8 w-8 place-items-center rounded-full border border-transparent text-zinc-400 transition hover:border-[var(--bd-accent)] hover:bg-[var(--acc-dim)] hover:text-cyan-100"
             aria-label="Notifications"
           >
             <Bell className="h-[15px] w-[15px]" />
@@ -62,11 +64,11 @@ export default function Topbar({ title, notifications = [] }: TopbarProps) {
           </button>
 
           {open && (
-            <div className="absolute right-0 mt-2 w-80 overflow-hidden rounded-xl border border-cyan-900/50 bg-[#05111b] shadow-2xl shadow-cyan-950/60 reveal-up">
-              <div className="border-b border-cyan-900/40 px-4 py-3 text-sm font-semibold text-cyan-200">
+            <div className="absolute right-0 mt-2 w-80 overflow-hidden rounded-xl border border-white/10 bg-[var(--bg-overlay)] shadow-2xl shadow-black/60 reveal-up">
+              <div className="border-b border-white/8 px-4 py-3 text-sm font-semibold text-cyan-100">
                 Recent Events
               </div>
-              <ul className="max-h-72 divide-y divide-cyan-950/50 overflow-y-auto">
+              <ul className="max-h-72 divide-y divide-white/6 overflow-y-auto">
                 {recent.length === 0 && (
                   <li className="px-4 py-4 text-sm text-zinc-400">No events yet.</li>
                 )}
@@ -83,17 +85,17 @@ export default function Topbar({ title, notifications = [] }: TopbarProps) {
           )}
         </div>
 
-        <button
-          type="button"
-          className="grid h-8 w-8 place-items-center rounded-full border border-transparent text-zinc-400 transition hover:border-cyan-800/50 hover:bg-cyan-950/60 hover:text-cyan-200"
+        <Link
+          href="/settings"
+          className="grid h-8 w-8 place-items-center rounded-full border border-transparent text-zinc-400 transition hover:border-[var(--bd-accent)] hover:bg-[var(--acc-dim)] hover:text-cyan-100"
           aria-label="Settings"
         >
           <Settings className="h-[15px] w-[15px]" />
-        </button>
+        </Link>
 
         <button
           type="button"
-          className="ml-1 grid h-8 w-8 place-items-center rounded-full border border-cyan-700/40 bg-cyan-500/20 text-xs font-semibold text-cyan-100"
+          className="ml-1 grid h-8 w-8 place-items-center rounded-full border border-[var(--bd-accent)] bg-[var(--acc-dim)] text-xs font-semibold text-cyan-100"
           aria-label="User profile"
         >
           U
