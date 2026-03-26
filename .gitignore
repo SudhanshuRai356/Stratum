@@ -2,3 +2,5 @@
 *.iso
 *.state
 *.json
+stratum
+dummy_torrents/
