@@ -1,6 +1,5 @@
 // Package unittests provides comprehensive test coverage for the Stratum BitTorrent client.
 //
-// This test suite is designed for LAB 7 - Question 5: "Develop test cases for testing your software"
 //
 // Test Organization:
 // - torrent_test.go: Torrent file parsing and validation (10 test cases)

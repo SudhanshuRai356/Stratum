@@ -18,7 +18,7 @@ func ReconstructTorrentFromMetadata(magnet *Mag_link, metadataBytes []byte) (*To
 
 	// Verify the InfoHash matches
 	hash := sha1.Sum(metadataBytes)
-	if !bytesEqual(hash[:], magnet.Info_hash) {
+	if !bytes.Equal(hash[:], magnet.Info_hash) {
 		return nil, fmt.Errorf("metadata InfoHash mismatch: expected %x, got %x", magnet.Info_hash, hash[:])
 	}
 
@@ -40,17 +40,4 @@ func ReconstructTorrentFromMetadata(magnet *Mag_link, metadataBytes []byte) (*To
 	}
 
 	return torrent, nil
-}
-
-// Helper function to compare byte slices
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

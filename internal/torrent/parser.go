@@ -21,6 +21,9 @@ type rawInfo struct {
 type rawTorrent struct {
 	Announce     string     `bencode:"announce"`
 	AnnounceList [][]string `bencode:"announce-list"`
+	Comment      string     `bencode:"comment"`
+	CreatedBy    string     `bencode:"created by"`
+	CreationDate int64      `bencode:"creation date"`
 	Info         rawInfo    `bencode:"info"`
 }
 
@@ -71,14 +74,17 @@ func ParseTorrent(path string) (*Torrent, error) {
 	t := &Torrent{
 		Announce:     rt.Announce,
 		AnnounceList: rt.AnnounceList,
+		Comment:      rt.Comment,
+		CreatedBy:    rt.CreatedBy,
+		CreationDate: rt.CreationDate,
+		InfoHash:     infoHash,
 		Info: Info{
 			Name:        rt.Info.Name,
 			PieceLength: rt.Info.PieceLength,
 			Pieces:      rt.Info.Pieces,
 			Length:      totalLength,
-			Files:       rt.Info.Files, 
+			Files:       rt.Info.Files,
 		},
-		InfoHash: infoHash,
 	}
 
 	return t, nil

@@ -120,7 +120,7 @@ func (pm *PieceManager) getProgress() (int, int) {
 	return pm.completedCount, pm.totalPieces
 }
 func downloadPiece(session *peer.PeerSession, pidx uint32, tor *torrent.Torrent, writer *storage.Writer) error {
-	temp_Comp := make([]bool, len(tor.Info.Pieces)/20)
+	temp_Comp := make([]bool, tor.NumPieces())
 	err := session.RunSinglePiece(pidx, temp_Comp, func(pid uint32) *peer.Downloader {
 		return peer.NewDownloader(
 			tor,
@@ -181,16 +181,11 @@ func (pm *PieceManager) mark_piece_failed(pidx uint32) {
 }
 func VerifyPiece(writer *storage.Writer, pieceIndex uint32, tor *torrent.Torrent) bool {
 	// 1. Calculate offset and length
-	pieceLen := tor.Info.PieceLength
-	// Handle last piece (might be smaller)
-	if int(pieceIndex) == len(tor.Info.Pieces)/20-1 {
-		remaining := int(tor.Info.Length - (int64(pieceIndex) * int64(pieceLen)))
-		pieceLen = remaining
-	}
+	pieceLen := tor.PieceLength(int(pieceIndex))
 
 	// 2. Read the piece data from disk/storage
 	buf := make([]byte, pieceLen)
-	offset := int64(pieceIndex) * int64(tor.Info.PieceLength)
+	offset := tor.PieceOffset(int(pieceIndex))
 
 	// Note: You might need to add a ReadAt method to your storage.Writer
 	// or access the underlying file directly. Assuming writer has a ReadAt:
@@ -204,9 +199,7 @@ func VerifyPiece(writer *storage.Writer, pieceIndex uint32, tor *torrent.Torrent
 	hash := sha1.Sum(buf)
 
 	// 4. Compare with expected hash from metadata
-	start := pieceIndex * 20
-	end := start + 20
-	expected := []byte(tor.Info.Pieces[start:end])
+	expected := tor.PieceHash(int(pieceIndex))
 
 	if !bytes.Equal(hash[:], expected) {
 		return false
@@ -576,7 +569,7 @@ func main() {
 
 	// Step 3: Try to connect to peers and download
 	//peerID := generatePeerID()
-	totalPieces := int(len(t.Info.Pieces) / 20)
+	totalPieces := t.NumPieces()
 	//completed := make([]bool, totalPieces)
 
 	writer, err := storage.New(outputPath, storageFiles)
