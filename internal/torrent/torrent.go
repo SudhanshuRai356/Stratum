@@ -1,10 +1,37 @@
-package torrent
-
 /*
 // This file handles .torrent files. It does the decoding of raw torrent file into usable
 // structs that can be used throughout this program. It provides APIs that consumer code can
 // utilize to reduce redundancy. The support for magnet links, is in the other files.
+//
+// A standard .torrent file look like.
+/* ```json
+{
+    "announce": "http://tracker.example.com:8080/announce",
+    "announce-list": [
+        ["http://tracker.example.com:8080/announce"],
+        ["http://backup.example.com:6969/announce"]
+    ],
+    "creation date": 1700000000,
+    "comment": "Created by MakeTorrent",
+    "created by": "MyApp/1.0.0",
+    "info": {
+        "name": "my_videos",
+        "piece length": 262144,
+        "pieces": "abcdef0123456789...",  # 20 bytes per piece
+        "files": [
+            {"length": 12345678, "path": ["my_videos", "video_01.mp4"]},
+            {"length": 87654321, "path": ["my_videos", "video_02.mp4"]},
+            {"length": 1000000,  "path": ["my_videos", "subtitle.srt"]}
+        ],
+        "private": 1
+    }
+}
+```
 */
+// This json like structure is bencoded into human unreadable form, you can use strings and
+// read. Info hash is calculated from the .torrent file and checked, hence its not in rawTorrent.
+
+package torrent
 
 type Info struct {
 	Name string `bencode:"name"`

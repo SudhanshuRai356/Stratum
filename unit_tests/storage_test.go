@@ -104,7 +104,7 @@ func TestSaveLoadState_Large(t *testing.T) {
 	defer os.Remove(tmpFile)
 	defer os.Remove(tmpFile + ".state")
 
-	writer, err := storage.New(tmpFile, []storage.FileInfo{{Path: nil, Length: 1024*1024}})
+	writer, err := storage.New(tmpFile, []storage.FileInfo{{Path: nil, Length: 1024 * 1024}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func BenchmarkSaveState(b *testing.B) {
 	defer os.Remove(tmpFile)
 	defer os.Remove(tmpFile + ".state")
 
-	writer, _ :=storage.New(tmpFile, []storage.FileInfo{{Path: nil, Length: 1000*512}})
+	writer, _ := storage.New(tmpFile, []storage.FileInfo{{Path: nil, Length: 1000 * 512}})
 	defer writer.Close()
 
 	completed := make([]bool, 1000)
@@ -161,7 +161,7 @@ func BenchmarkLoadState(b *testing.B) {
 	defer os.Remove(tmpFile)
 	defer os.Remove(tmpFile + ".state")
 
-	writer, _ := storage.New(tmpFile, []storage.FileInfo{{Path: nil, Length: 1000*512}})
+	writer, _ := storage.New(tmpFile, []storage.FileInfo{{Path: nil, Length: 1000 * 512}})
 	defer writer.Close()
 
 	completed := make([]bool, 1000)

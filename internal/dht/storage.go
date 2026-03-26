@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"os"
 )
-func SaveNodes(filepath string,node []Node)error{ //saveing nodes to json
-	valid_nodes:=[]Node{}
-	for _,n:=range node{
-		if n.Validate()==nil{
-			valid_nodes=append(valid_nodes,n)
-		}else{
+
+func SaveNodes(filepath string, node []Node) error { //saveing nodes to json
+	valid_nodes := []Node{}
+	for _, n := range node {
+		if n.Validate() == nil {
+			valid_nodes = append(valid_nodes, n)
+		} else {
 			fmt.Printf("Invalid node skipped: %v\n", n)
 		}
 	}
@@ -25,9 +26,9 @@ func SaveNodes(filepath string,node []Node)error{ //saveing nodes to json
 	fmt.Printf("Nodes saved to %s\n", filepath)
 	return nil
 }
-func LoadNodes(filepath string) []Node{ //loading saved nodes
-	nodes,err:=os.ReadFile(filepath)
-	if err!=nil{
+func LoadNodes(filepath string) []Node { //loading saved nodes
+	nodes, err := os.ReadFile(filepath)
+	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Printf("No such node yet, error: %v\n", err)
 			return []Node{}
@@ -41,11 +42,11 @@ func LoadNodes(filepath string) []Node{ //loading saved nodes
 		fmt.Printf("Failed to unmarshal nodes: %v\n", err)
 		return []Node{}
 	}
-	true_nodes:=[]Node{}
-	for _,node:=range loaded_Nodes{
-		if node.Validate()==nil{
-			true_nodes=append(true_nodes,node)
-		}else{
+	true_nodes := []Node{}
+	for _, node := range loaded_Nodes {
+		if node.Validate() == nil {
+			true_nodes = append(true_nodes, node)
+		} else {
 			fmt.Printf("Invalid node skipped: %v\n", node)
 		}
 	}

@@ -8,13 +8,13 @@ import (
 	"strings"
 )
 
-type Mag_link struct{
-	Trackers []string
+type Mag_link struct {
+	Trackers  []string
 	Info_hash []byte
-	Name string
+	Name      string
 }
 
-func Parse_Mag_URL (urli string) (*Mag_link, error) {
+func Parse_Mag_URL(urli string) (*Mag_link, error) {
 	if urli[0:7] != "magnet:" {
 		return nil, errors.New("Invalid magnet URL")
 	}
@@ -22,23 +22,23 @@ func Parse_Mag_URL (urli string) (*Mag_link, error) {
 	if err != nil {
 		return nil, errors.New("Failed to parse magnet URL")
 	}
-	mag:=&Mag_link{}
+	mag := &Mag_link{}
 	params := parsed_url.Query()
-	for keys,vals := range params{
+	for keys, vals := range params {
 		switch keys {
 		case "xt":
-			for _,val:=range vals{
+			for _, val := range vals {
 				if val[0:9] != "urn:btih:" {
 					continue
 				}
-				hash_str:=val[9:]
+				hash_str := val[9:]
 				if len(hash_str) == 40 {
 					info_hash, err := hex.DecodeString(hash_str)
 					if err == nil {
 						mag.Info_hash = info_hash
 					}
-				}else{
-					hash_str=strings.ToUpper(hash_str) //some weird torrent base32 padding rule man don't question it
+				} else {
+					hash_str = strings.ToUpper(hash_str) //some weird torrent base32 padding rule man don't question it
 					info_hash, err := base32.StdEncoding.DecodeString(hash_str)
 					if err == nil {
 						mag.Info_hash = info_hash
@@ -55,4 +55,3 @@ func Parse_Mag_URL (urli string) (*Mag_link, error) {
 	}
 	return mag, nil
 }
-	

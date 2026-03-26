@@ -28,25 +28,17 @@ type rawTorrent struct {
 }
 
 func ParseTorrent(path string) (*Torrent, error) {
-	f, err := os.Open(path) //used to structurally decode the .torrent file
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 
 	var rt rawTorrent
-	if err := bencode.NewDecoder(f).Decode(&rt); err != nil {
+	if err := bencode.NewDecoder(bytes.NewReader(data)).Decode(&rt); err != nil {
 		return nil, err
 	}
-
-	f2, err := os.Open(path) // second time opening to build raw info hash
-	if err != nil {
-		return nil, err
-	}
-	defer f2.Close()
-
-	var raw map[string]interface{}
-	if err := bencode.NewDecoder(f2).Decode(&raw); err != nil {
+	var raw map[string]any
+	if err := bencode.NewDecoder(bytes.NewReader(data)).Decode(&raw); err != nil {
 		return nil, err
 	}
 

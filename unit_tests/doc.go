@@ -1,6 +1,5 @@
 // Package unittests provides comprehensive test coverage for the Stratum BitTorrent client.
 //
-//
 // Test Organization:
 // - torrent_test.go: Torrent file parsing and validation (10 test cases)
 // - peer_test.go: Peer bitfield operations and piece selection (10 test cases)
