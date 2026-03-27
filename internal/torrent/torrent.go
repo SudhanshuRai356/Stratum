@@ -33,6 +33,10 @@
 
 package torrent
 
+import(
+	"strings"
+)
+
 type Info struct {
 	Name string `bencode:"name"`
 	// This tag fixes the Magnet Link download!
@@ -87,4 +91,26 @@ func (t *Torrent) PieceHash(index int) []byte {
 // IsMultiFile returns true if this torrent contains multiple files.
 func (t *Torrent) IsMultiFile() bool {
 	return len(t.Info.Files) > 0
+}
+
+// GetAllAnnounceURLs returns list of URLs, for
+// which announce is possible.
+func (t *Torrent) GetAllAnnounceURLs() []string {
+	var urls []string
+
+	if t.Announce != "" {
+		urls = append(urls, t.Announce)
+	}
+
+	for _, tier := range t.AnnounceList {
+		for _, u := range tier {
+			if strings.HasPrefix(u, "http://") ||
+				strings.HasPrefix(u, "https://") ||
+				strings.HasPrefix(u, "udp://") {
+				urls = append(urls, u)
+			}
+		}
+	}
+
+	return urls
 }
