@@ -15,53 +15,36 @@ import (
 )
 
 func Announce(t *torrent.Torrent, left int64) ([]Peer, error) {
-	peerID := "-SG0001-123456789012"
-
-	params := url.Values{}
-	params.Add("info_hash", string(t.InfoHash[:]))
-	params.Add("peer_id", peerID)
-	params.Add("port", "6881")
-	params.Add("uploaded", "0")
-	params.Add("downloaded", "0")
-	params.Add("left", strconv.FormatInt(left, 10))
-
 	announceURLs := t.GetAllAnnounceURLs()
 	if len(announceURLs) == 0 {
 		return nil, fmt.Errorf("no trackers in torrent")
 	}
 
 	var wg sync.WaitGroup
-	// Create a channel to collect peers from all successful trackers
 	peerChan := make(chan []Peer, len(announceURLs))
 
-	// FIRE THE SHOTGUN: Query all trackers simultaneously
-	for _, announce := range announceURLs {
-		wg.Add(1)
-		go func(trackerURL string) {
-			defer wg.Done()
-
+	for _, announceURL := range announceURLs {
+		wg.Go(func() {
 			var peers []Peer
 			var err error
 
-			if strings.HasPrefix(trackerURL, "udp://") {
-				peers, err = AnnounceUDP(trackerURL, t, left)
-			} else if strings.HasPrefix(trackerURL, "http://") || strings.HasPrefix(trackerURL, "https://") {
-				fullURL := trackerURL + "?" + params.Encode()
-				peers, err = announceHTTP(fullURL)
+			if strings.HasPrefix(announceURL, "udp://") {
+				peers, err = AnnounceUDP(announceURL, t, left)
+			} else if strings.HasPrefix(announceURL, "http://") || strings.HasPrefix(announceURL, "https://") {
+				peers, err = announceHTTP(announceURL, t, left)
 			} else {
-				return // Unsupported protocol
+				return
 			}
 
 			if err != nil {
-				// Silently drop dead trackers to avoid spamming the terminal
 				return
 			}
 
 			if len(peers) > 0 {
-				fmt.Printf("Tracker %s succeeded, got %d peers\n", trackerURL, len(peers))
+				fmt.Printf("Tracker %s succeeded, got %d peers\n", announceURL, len(peers))
 				peerChan <- peers
 			}
-		}(announce)
+		})
 	}
 
 	// Wait for all tracker requests to finish (or timeout)
@@ -89,19 +72,28 @@ func Announce(t *torrent.Torrent, left int64) ([]Peer, error) {
 	return finalPeers, nil
 }
 
-func announceHTTP(announceURL string) ([]Peer, error) {
-	// FIX: Never use default http.Get. Always enforce a strict timeout.
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-	}
+func announceHTTP(announceURL string, t *torrent.Torrent, left int64) ([]Peer, error) {
+	peerID := "-SG0001-123456789012"
 
-	resp, err := client.Get(announceURL)
+	params := url.Values{}
+	params.Add("info_hash", string(t.InfoHash[:]))
+	params.Add("peer_id", peerID)
+	params.Add("port", "6881")
+	params.Add("uploaded", "0")
+	params.Add("downloaded", "0")
+	params.Add("left", strconv.FormatInt(left, 10))
+
+	fullURL := announceURL + "?" + params.Encode()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	resp, err := client.Get(fullURL)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	var respMap map[string]interface{}
+	var respMap map[string]any
 	err = bencode.NewDecoder(resp.Body).Decode(&respMap)
 	if err != nil {
 		return nil, err
@@ -133,9 +125,9 @@ func announceHTTP(announceURL string) ([]Peer, error) {
 			})
 		}
 
-	case []interface{}:
+	case []any:
 		for _, peerVal := range p {
-			peerMap, ok := peerVal.(map[string]interface{})
+			peerMap, ok := peerVal.(map[string]any)
 			if !ok {
 				continue
 			}
