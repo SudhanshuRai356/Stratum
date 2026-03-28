@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
-import { JetBrains_Mono, Space_Grotesk } from "next/font/google";
+import { JetBrains_Mono, Outfit } from "next/font/google";
+import AppProviders from "@/components/providers/AppProviders";
 import "./globals.css";
 
-const displaySans = Space_Grotesk({
+const displaySans = Outfit({
   variable: "--font-display-sans",
   subsets: ["latin"],
 });
@@ -27,7 +28,9 @@ export default function RootLayout({
       lang="en"
       className={`${displaySans.variable} ${mono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <AppProviders>{children}</AppProviders>
+      </body>
     </html>
   );
 }

@@ -29,6 +29,8 @@ export type SpeedHistoryPoint = {
   downloadBps: number;
   uploadBps: number;
   peers: number;
+  seeders: number;
+  leechers: number;
   cpuPercent: number;
   diskPercent: number;
 };
