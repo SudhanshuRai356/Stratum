@@ -11,7 +11,7 @@ import (
 	"github.com/Kushal-39/Stratum/internal/torrent"
 )
 
-func AnnounceUDP(trackerURL string, t *torrent.Torrent, left int64) ([]Peer, error) {
+func announceUDP(trackerURL string, t *torrent.Torrent, left int64) ([]Peer, error) {
 	u, err := url.Parse(trackerURL)
 	if err != nil {
 		return nil, err
@@ -27,7 +27,6 @@ func AnnounceUDP(trackerURL string, t *torrent.Torrent, left int64) ([]Peer, err
 		return nil, err
 	}
 	defer conn.Close()
-	// FIX: Force a hard 5-second deadline on all Read/Write operations
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
 
 	connectTxID := rand.Uint32()
