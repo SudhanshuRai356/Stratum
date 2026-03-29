@@ -44,6 +44,18 @@ func announceHTTP(announceURL string, t *torrent.Torrent, left int64) ([]Peer, e
 		return nil, fmt.Errorf("invalid tracker response format")
 	}
 
+	seeders := -1
+	leechers := -1
+	if complete, ok := respMap["complete"].(int64); ok {
+		seeders = int(complete)
+	}
+	if incomplete, ok := respMap["incomplete"].(int64); ok {
+		leechers = int(incomplete)
+	}
+	if seeders >= 0 || leechers >= 0 {
+		updateSwarmStats(seeders, leechers)
+	}
+
 	peersVal, ok := respMap["peers"]
 	if !ok {
 		return nil, fmt.Errorf("no peers field in response")

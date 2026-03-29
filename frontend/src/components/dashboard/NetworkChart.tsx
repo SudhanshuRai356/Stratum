@@ -9,7 +9,9 @@ import {
   LineElement,
   PointElement,
   Tooltip,
+  type ChartData,
   type ChartOptions,
+  type ScriptableContext,
 } from "chart.js";
 import { Line } from "react-chartjs-2";
 import SourceBadge from "@/components/ui/SourceBadge";
@@ -40,14 +42,14 @@ export default function NetworkChart({ data }: NetworkChartProps) {
   const divisor = useMbps ? 1024 * 1024 : 1024;
   const unitLabel = useMbps ? "MB/s" : "KB/s";
 
-  const chartData = {
+  const chartData: ChartData<"line", number[], string> = {
     labels,
     datasets: [
       {
         label: "Download Speed",
         data: data.map((point) => Number(toDisplayUnit(point.downloadBps, divisor).toFixed(2))),
         borderColor: "rgba(0, 212, 180, 1)",
-        backgroundColor: (context: { chart: ChartJS<"line"> }) => {
+        backgroundColor: (context: ScriptableContext<"line">) => {
           const { chart } = context;
           const { ctx, chartArea } = chart;
           if (!chartArea) {
@@ -67,7 +69,7 @@ export default function NetworkChart({ data }: NetworkChartProps) {
         label: "Upload Speed",
         data: data.map((point) => Number(toDisplayUnit(point.uploadBps, divisor).toFixed(2))),
         borderColor: "rgba(186, 230, 253, 0.95)",
-        backgroundColor: (context: { chart: ChartJS<"line"> }) => {
+        backgroundColor: (context: ScriptableContext<"line">) => {
           const { chart } = context;
           const { ctx, chartArea } = chart;
           if (!chartArea) {

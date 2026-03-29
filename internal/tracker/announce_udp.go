@@ -89,6 +89,7 @@ func announceUDP(trackerURL string, t *torrent.Torrent, left int64) ([]Peer, err
 	interval := binary.BigEndian.Uint32(resp[8:12])
 	leechers := binary.BigEndian.Uint32(resp[12:16])
 	seeders := binary.BigEndian.Uint32(resp[16:20])
+	updateSwarmStats(int(seeders), int(leechers))
 
 	fmt.Println("UDP tracker response:")
 	fmt.Println(" Interval:", interval)

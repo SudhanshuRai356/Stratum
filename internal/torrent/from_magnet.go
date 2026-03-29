@@ -23,10 +23,11 @@ type Mag_link struct {
 }
 
 func Parse_Mag_URL(urli string) (*Mag_link, error) {
-	if urli[0:7] != "magnet:" {
+	trimmed := strings.TrimSpace(urli)
+	if !strings.HasPrefix(strings.ToLower(trimmed), "magnet:") {
 		return nil, errors.New("Invalid magnet URL")
 	}
-	parsed_url, err := url.Parse(urli)
+	parsed_url, err := url.Parse(trimmed)
 	if err != nil {
 		return nil, errors.New("Failed to parse magnet URL")
 	}
@@ -36,7 +37,7 @@ func Parse_Mag_URL(urli string) (*Mag_link, error) {
 		switch keys {
 		case "xt":
 			for _, val := range vals {
-				if val[0:9] != "urn:btih:" {
+				if !strings.HasPrefix(strings.ToLower(val), "urn:btih:") {
 					continue
 				}
 				hash_str := val[9:]
@@ -45,7 +46,7 @@ func Parse_Mag_URL(urli string) (*Mag_link, error) {
 					if err == nil {
 						mag.Info_hash = info_hash
 					}
-				} else {
+				} else if len(hash_str) > 0 {
 					hash_str = strings.ToUpper(hash_str) //some weird torrent base32 padding rule man don't question it
 					info_hash, err := base32.StdEncoding.DecodeString(hash_str)
 					if err == nil {
@@ -60,6 +61,9 @@ func Parse_Mag_URL(urli string) (*Mag_link, error) {
 		case "tr":
 			mag.Trackers = append(mag.Trackers, vals...)
 		}
+	}
+	if len(mag.Info_hash) == 0 {
+		return nil, errors.New("magnet URL missing valid btih info hash")
 	}
 	return mag, nil
 }

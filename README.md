@@ -31,6 +31,21 @@ Here is what it actually does, since apparently that needs to be spelled out:
 go run ./cmd/stratum <your .torrent file or magnet link>
 ```
 
+## Local Dev (Backend + Frontend)
+
+Run both services together:
+
+```
+./scripts/dev.sh
+```
+
+This starts:
+
+- Go backend API on `127.0.0.1:8080`
+- Next.js frontend in `frontend/`
+
+Press `Ctrl+C` once to stop both.
+
 Both formats are supported. Hand it a `.torrent` file or a `magnet:` URI (wrapped in quotes :3) and it will figure it out. For magnet links, it fetches the metadata from peers before starting the download, which takes a moment. The output directory structure is built automatically based on the torrent metadata, so you do not need to create anything beforehand.
 
 ---

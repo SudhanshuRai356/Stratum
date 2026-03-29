@@ -1,19 +1,19 @@
 @import "tailwindcss";
 
 :root {
-  --bg-void: #080a0d;
-  --bg-base: #0c0e12;
-  --bg-surface: #111318;
-  --bg-elevated: #161a21;
-  --bg-overlay: #1c2029;
+  --bg-void: #030507;
+  --bg-base: #070a0f;
+  --bg-surface: #0c1118;
+  --bg-elevated: #101723;
+  --bg-overlay: #151f2d;
 
-  --fg-main: #e9f5f5;
-  --fg-muted: #8da0a6;
+  --fg-main: #e6edf6;
+  --fg-muted: #8c9daf;
 
-  --acc: #00d4b4;
-  --acc-dim: rgba(0, 212, 180, 0.12);
-  --acc-glow: rgba(0, 212, 180, 0.06);
-  --bd-accent: rgba(0, 212, 180, 0.3);
+  --acc: #14c7b8;
+  --acc-dim: rgba(20, 199, 184, 0.12);
+  --acc-glow: rgba(20, 199, 184, 0.05);
+  --bd-accent: rgba(20, 199, 184, 0.28);
 
   --success: #22c55e;
   --success-bg: #0f2318;
@@ -22,9 +22,9 @@
   --danger: #ef4444;
   --danger-bg: #1a0a0a;
 
-  --bd-subtle: rgba(255, 255, 255, 0.04);
-  --bd-default: rgba(255, 255, 255, 0.08);
-  --bd-strong: rgba(255, 255, 255, 0.14);
+  --bd-subtle: rgba(205, 220, 236, 0.05);
+  --bd-default: rgba(205, 220, 236, 0.09);
+  --bd-strong: rgba(205, 220, 236, 0.16);
 }
 
 @theme inline {
@@ -36,10 +36,11 @@
 
 body {
   background:
-    radial-gradient(circle at 12% -5%, rgba(0, 212, 180, 0.08), transparent 30%),
-    radial-gradient(circle at 90% 0%, rgba(0, 212, 180, 0.05), transparent 26%),
-    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 24px),
-    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 24px),
+    radial-gradient(circle at 14% -8%, rgba(20, 199, 184, 0.085), transparent 32%),
+    radial-gradient(circle at 94% 0%, rgba(56, 189, 248, 0.06), transparent 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 120px),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.02) 0 1px, transparent 1px 26px),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.02) 0 1px, transparent 1px 26px),
     var(--bg-base);
   color: var(--fg-main);
   font-family: var(--font-display-sans), sans-serif;
@@ -48,8 +49,8 @@ body {
 
 .panel {
   border: 1px solid var(--bd-default);
-  background: var(--bg-elevated);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02), 0 16px 30px rgba(0, 0, 0, 0.26);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.014), transparent 70%), var(--bg-elevated);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02), 0 18px 36px rgba(0, 0, 0, 0.36);
   position: relative;
   overflow: hidden;
 }
@@ -58,7 +59,7 @@ body {
   content: "";
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at 100% 0%, var(--acc-glow), transparent 46%);
+  background: radial-gradient(circle at 100% 0%, var(--acc-glow), transparent 52%);
   pointer-events: none;
 }
 
