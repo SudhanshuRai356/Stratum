@@ -1,6 +1,7 @@
 "use client";
 
 import NetworkChart from "@/components/dashboard/NetworkChart";
+import StartDownloadBar from "@/components/dashboard/StartDownloadBar";
 import StatCard from "@/components/dashboard/StatCard";
 import TorrentCard from "@/components/dashboard/TorrentCard";
 import UtilizationChart from "@/components/dashboard/UtilizationChart";
@@ -8,13 +9,6 @@ import AppShell from "@/components/layout/AppShell";
 import { useDashboardData } from "@/components/providers/DashboardDataProvider";
 import SourceBadge from "@/components/ui/SourceBadge";
 import { formatCompactStorage } from "@/lib/format";
-
-const FALLBACK_TREND = {
-  totalDownloaded: "+12.5% last month",
-  totalUploaded: "+7.8% last month",
-  activeTorrents: "-1 last hour",
-  peersConnected: "+3.1% daily",
-};
 
 export default function DashboardPage() {
   const { status, history, totals, notifications, activeTorrents, totalPeersAcrossActive } = useDashboardData();
@@ -50,42 +44,28 @@ export default function DashboardPage() {
           </div>
         </header>
 
+        <StartDownloadBar />
+
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard
             title="Total Downloaded"
             value={formatCompactStorage(totals.downloadedBytes)}
             subtitle="Cumulative bytes downloaded"
-            trend={FALLBACK_TREND.totalDownloaded}
-            trendTone="cyan"
-            source="WS"
-            critical
           />
           <StatCard
             title="Total Uploaded"
             value={formatCompactStorage(totals.uploadedBytes)}
             subtitle="Persisted between sessions"
-            trend={FALLBACK_TREND.totalUploaded}
-            trendTone="cyan"
-            source="WS"
-            critical
           />
           <StatCard
             title="Active Torrents"
             value={String(activeTorrents.length)}
             subtitle="Downloading + Seeding"
-            trend={FALLBACK_TREND.activeTorrents}
-            trendTone="red"
-            source="WS"
-            critical
           />
           <StatCard
             title="Peers Connected"
             value={String(totalPeersAcrossActive)}
             subtitle="Across active torrents"
-            trend={FALLBACK_TREND.peersConnected}
-            trendTone="green"
-            source="WS"
-            critical
           />
         </div>
 
@@ -105,8 +85,6 @@ export default function DashboardPage() {
                 peers: point.peers,
                 seeders: point.seeders,
                 leechers: point.leechers,
-                cpu: point.cpuPercent,
-                disk: point.diskPercent,
               }))}
             />
           </div>
@@ -115,7 +93,6 @@ export default function DashboardPage() {
         <section className="space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="text-2xl font-semibold text-zinc-100">Active Downloads</h3>
-            <SourceBadge source="UI" />
           </div>
 
           <div className="grid gap-4 xl:grid-cols-3">

@@ -12,11 +12,34 @@ type CommandResult = {
   message?: string;
 };
 
-async function sendTorrentCommand(infoHash: string, action: "pause" | "resume" | "recheck") {
+type TorrentAction = "pause" | "resume" | "reannounce" | "stop";
+
+async function sendTorrentCommand(infoHash: string, action: TorrentAction) {
   return callGoBackend<CommandResult>("/api/control", {
     method: "POST",
     body: JSON.stringify({ info_hash: infoHash, action }),
   });
+}
+
+function actionSetForState(state: string): Array<{ action: TorrentAction; label: string }> {
+  if (state === "Seeding") {
+    return [
+      { action: "resume", label: "start" },
+      { action: "reannounce", label: "reannounce" },
+      { action: "stop", label: "stop" },
+    ];
+  }
+  if (state === "Downloading") {
+    return [
+      { action: "pause", label: "pause" },
+      { action: "resume", label: "start" },
+      { action: "stop", label: "stop" },
+    ];
+  }
+  return [
+    { action: "resume", label: "start" },
+    { action: "stop", label: "stop" },
+  ];
 }
 
 export default function DownloadsPage() {
@@ -78,13 +101,14 @@ export default function DownloadsPage() {
                   <th className="px-4 py-3">Up</th>
                   <th className="px-4 py-3">ETA</th>
                   <th className="px-4 py-3">Peers</th>
+                  <th className="px-4 py-3">Pieces</th>
                   <th className="px-4 py-3">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-zinc-400">
+                    <td colSpan={9} className="px-4 py-8 text-center text-zinc-400">
                       No matching torrents.
                     </td>
                   </tr>
@@ -114,11 +138,16 @@ export default function DownloadsPage() {
                       <td className="px-4 py-3 font-mono text-zinc-300">{formatSpeed(torrent.upload_speed || 0)}</td>
                       <td className="px-4 py-3 text-zinc-300">{formatEta(etaSeconds)}</td>
                       <td className="px-4 py-3 text-zinc-300">{torrent.connected_peers ?? 0}</td>
+                      <td className="px-4 py-3 text-zinc-300">
+                        {typeof torrent.completed_pieces === "number" && typeof torrent.total_pieces === "number" && torrent.total_pieces > 0
+                          ? `${torrent.completed_pieces}/${torrent.total_pieces}`
+                          : "-"}
+                      </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
-                          {(["pause", "resume", "recheck"] as const).map((action) => (
+                          {actionSetForState(torrent.state).map(({ action, label }) => (
                             <button
-                              key={action}
+                              key={`${torrent.info_hash}-${action}`}
                               type="button"
                               disabled={busyHash === torrent.info_hash}
                               onClick={async () => {
@@ -135,7 +164,7 @@ export default function DownloadsPage() {
                               }}
                               className="rounded-lg border border-white/12 bg-black/25 px-2 py-1 text-xs text-zinc-200 transition hover:border-[var(--bd-accent)] hover:text-cyan-100 disabled:opacity-50"
                             >
-                              {action}
+                              {label}
                             </button>
                           ))}
                         </div>

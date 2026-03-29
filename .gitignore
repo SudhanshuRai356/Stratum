@@ -2,5 +2,8 @@
 *.iso
 *.state
 *.json
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/tsconfig.json
 stratum
 dummy_torrents/

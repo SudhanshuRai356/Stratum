@@ -38,6 +38,9 @@ export default function AppShell({ children, title = "Overview", notifications =
   return (
     <div className="relative min-h-screen overflow-hidden bg-[var(--bg-base)] text-zinc-100">
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,var(--bg-void)_0%,var(--bg-base)_46%,#0a0d12_100%)]" />
+      <div className="pointer-events-none absolute -left-40 -top-32 h-96 w-96 rounded-full bg-cyan-500/10 blur-[120px]" />
+      <div className="pointer-events-none absolute right-[-8rem] top-20 h-[28rem] w-[28rem] rounded-full bg-emerald-400/8 blur-[140px]" />
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(255,255,255,0.04)_0%,transparent_55%)]" />
 
       <div className="relative flex min-h-screen">
         <Sidebar collapsed={collapsed} pathname={pathname} items={NAV_ITEMS} onCollapseToggle={toggleCollapsed} />

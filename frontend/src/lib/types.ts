@@ -13,6 +13,9 @@ export type TorrentState = {
   upload_speed?: number;
   seeders?: number;
   leechers?: number;
+  completed_pieces?: number;
+  total_pieces?: number;
+  round?: number;
   size_bytes?: number;
   category?: string;
 };

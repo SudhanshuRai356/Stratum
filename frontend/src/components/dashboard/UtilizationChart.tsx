@@ -11,6 +11,7 @@ import {
   PointElement,
   Tooltip,
   type ChartOptions,
+  type ScriptableContext,
 } from "chart.js";
 import { Chart } from "react-chartjs-2";
 import SourceBadge from "@/components/ui/SourceBadge";
@@ -22,8 +23,6 @@ type UtilPoint = {
   peers: number;
   seeders: number;
   leechers: number;
-  cpu: number;
-  disk: number;
 };
 
 type UtilizationChartProps = {
@@ -45,7 +44,7 @@ export default function UtilizationChart({ data }: UtilizationChartProps) {
         label: "Active Peers",
         data: data.map((point) => point.peers),
         yAxisID: "yPeers",
-        backgroundColor: (context: { chart: ChartJS<"bar" | "line"> }) => {
+        backgroundColor: (context: ScriptableContext<"bar">) => {
           const { chart } = context;
           const { ctx, chartArea } = chart;
           if (!chartArea) {
@@ -78,29 +77,6 @@ export default function UtilizationChart({ data }: UtilizationChartProps) {
         pointRadius: 0,
         borderWidth: 2,
         borderDash: [7, 5],
-        tension: 0.3,
-        fill: false,
-      },
-      {
-        type: "line" as const,
-        label: "CPU %",
-        data: data.map((point) => Number(point.cpu.toFixed(1))),
-        yAxisID: "yPercent",
-        borderColor: "rgba(34, 197, 94, 1)",
-        pointRadius: 0,
-        borderWidth: 1.8,
-        tension: 0.3,
-        fill: false,
-      },
-      {
-        type: "line" as const,
-        label: "Disk %",
-        data: data.map((point) => Number(point.disk.toFixed(1))),
-        yAxisID: "yPercent",
-        borderColor: "rgba(244, 114, 182, 1)",
-        pointRadius: 0,
-        borderWidth: 1.8,
-        borderDash: [5, 4],
         tension: 0.3,
         fill: false,
       },
@@ -163,29 +139,13 @@ export default function UtilizationChart({ data }: UtilizationChartProps) {
           color: "rgba(141, 160, 166, 0.85)",
         },
       },
-      yPercent: {
-        position: "right",
-        min: 0,
-        max: 100,
-        title: {
-          display: true,
-          text: "%",
-          color: "rgba(141, 160, 166, 0.85)",
-        },
-        grid: {
-          drawOnChartArea: false,
-        },
-        ticks: {
-          color: "rgba(141, 160, 166, 0.85)",
-        },
-      },
     },
   };
 
   return (
     <article className="panel chart-panel-glow scan-lines reveal-up h-[21.5rem] rounded-xl p-4">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <h3 className="text-[1.65rem] font-semibold text-zinc-100">Swarm Pattern &amp; Utilization</h3>
+        <h3 className="text-[1.65rem] font-semibold text-zinc-100">Swarm Pattern</h3>
         <div className="flex gap-1.5">
           <SourceBadge source="WS" />
           <SourceBadge source="GO" />
