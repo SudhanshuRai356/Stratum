@@ -11,22 +11,6 @@ type SidebarProps = {
   onCollapseToggle: () => void;
 };
 
-function badgeClass(source: NavItem["source"]): string {
-  if (source === "RT") {
-    return "bg-rose-950/60 text-rose-300 border border-rose-500/30";
-  }
-  if (source === "GO") {
-    return "bg-sky-950/60 text-sky-300 border border-sky-500/30";
-  }
-  if (source === "FS") {
-    return "bg-amber-950/60 text-amber-300 border border-amber-500/30";
-  }
-  if (source === "UI") {
-    return "bg-zinc-900 text-zinc-300 border border-zinc-500/30";
-  }
-  return "bg-emerald-950/60 text-emerald-300 border border-emerald-500/30";
-}
-
 export default function Sidebar({ collapsed, pathname, items, onCollapseToggle }: SidebarProps) {
   return (
     <aside
@@ -55,7 +39,7 @@ export default function Sidebar({ collapsed, pathname, items, onCollapseToggle }
               key={item.id}
               href={item.href}
               className={[
-                "group relative flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm",
+                "group relative flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left",
                 "transition-all duration-200",
                 selected
                   ? "bg-[var(--acc-dim)] text-cyan-100 ring-1 ring-[var(--bd-accent)]"
@@ -70,14 +54,7 @@ export default function Sidebar({ collapsed, pathname, items, onCollapseToggle }
               />
               <item.icon className="h-[15px] w-[15px] shrink-0" />
               {!collapsed && (
-                <>
-                  <span className="flex-1 text-[13px]">{item.label}</span>
-                  <span
-                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-[0.08em] ${badgeClass(item.source)}`}
-                  >
-                    {item.source}
-                  </span>
-                </>
+                <span className="flex-1 text-[15px] font-medium">{item.label}</span>
               )}
             </Link>
           );

@@ -1,5 +1,4 @@
 import type { TorrentState } from "@/lib/types";
-import SourceBadge from "@/components/ui/SourceBadge";
 import { formatBytes, formatEta, formatPercent, formatSpeed } from "@/lib/format";
 
 type TorrentCardProps = {
@@ -49,11 +48,6 @@ export default function TorrentCard({ torrent }: TorrentCardProps) {
         >
           {torrent.state || "Downloading"}
         </span>
-      </div>
-
-      <div className="mt-2 flex items-center gap-2">
-        <SourceBadge source="WS" />
-        <SourceBadge source="UI" />
       </div>
 
       <div className="mt-3 flex items-center gap-4 text-xs text-zinc-300">
