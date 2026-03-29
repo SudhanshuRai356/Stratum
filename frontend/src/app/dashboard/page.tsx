@@ -85,8 +85,6 @@ export default function DashboardPage() {
                 peers: point.peers,
                 seeders: point.seeders,
                 leechers: point.leechers,
-                cpu: point.cpuPercent,
-                disk: point.diskPercent,
               }))}
             />
           </div>

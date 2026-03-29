@@ -9,7 +9,7 @@ import type { NotificationLevel } from "@/lib/types";
 const LEVELS: NotificationLevel[] = ["info", "warn", "error", "success"];
 
 export default function LogsPage() {
-  const { notifications, history } = useDashboardData();
+  const { notifications, history, torrents } = useDashboardData();
   const [level, setLevel] = useState<NotificationLevel | "all">("all");
 
   const filteredNotifications = useMemo(() => {
@@ -87,6 +87,53 @@ export default function LogsPage() {
               ))}
             </div>
           </article>
+        </section>
+
+        <section className="panel reveal-up rounded-2xl p-4">
+          <h3 className="text-lg font-semibold text-zinc-100">Live Transfer Metrics</h3>
+          <div className="mt-3 overflow-x-auto rounded-lg border border-white/8">
+            <table className="w-full min-w-[880px] text-left text-sm">
+              <thead className="bg-[var(--bg-surface)] text-xs uppercase tracking-[0.08em] text-zinc-400">
+                <tr>
+                  <th className="px-3 py-2">Torrent</th>
+                  <th className="px-3 py-2">State</th>
+                  <th className="px-3 py-2">Peers</th>
+                  <th className="px-3 py-2">Seeders</th>
+                  <th className="px-3 py-2">Leechers</th>
+                  <th className="px-3 py-2">Pieces</th>
+                  <th className="px-3 py-2">Round</th>
+                  <th className="px-3 py-2">Down</th>
+                  <th className="px-3 py-2">Up</th>
+                </tr>
+              </thead>
+              <tbody>
+                {torrents.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="px-3 py-5 text-center text-zinc-500">
+                      No active runtime torrent state yet.
+                    </td>
+                  </tr>
+                )}
+                {torrents.map((torrent) => (
+                  <tr key={torrent.info_hash} className="border-t border-white/8 text-zinc-200">
+                    <td className="max-w-[22rem] truncate px-3 py-2">{torrent.name}</td>
+                    <td className="px-3 py-2">{torrent.state}</td>
+                    <td className="px-3 py-2">{torrent.connected_peers ?? 0}</td>
+                    <td className="px-3 py-2">{torrent.seeders ?? 0}</td>
+                    <td className="px-3 py-2">{torrent.leechers ?? 0}</td>
+                    <td className="px-3 py-2">
+                      {typeof torrent.completed_pieces === "number" && typeof torrent.total_pieces === "number" && torrent.total_pieces > 0
+                        ? `${torrent.completed_pieces}/${torrent.total_pieces}`
+                        : "-"}
+                    </td>
+                    <td className="px-3 py-2">{typeof torrent.round === "number" ? torrent.round : "-"}</td>
+                    <td className="px-3 py-2">{Math.round(torrent.download_speed || 0)}</td>
+                    <td className="px-3 py-2">{Math.round(torrent.upload_speed || 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
       </section>
     </AppShell>

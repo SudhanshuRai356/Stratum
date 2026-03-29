@@ -173,6 +173,8 @@ export function useTorrentWS(options?: UseTorrentWSOptions): UseTorrentWSResult 
   const smoothRef = useRef({ downloadBps: 0, uploadBps: 0, peers: 0 });
   const seenAtRef = useRef<Map<string, number>>(new Map());
   const previousStateRef = useRef<Map<string, string>>(new Map());
+  const previousRoundRef = useRef<Map<string, number>>(new Map());
+  const previousPiecesRef = useRef<Map<string, number>>(new Map());
 
   const [status, setStatus] = useState<WebSocketConnectionStatus>("idle");
   const [latest, setLatest] = useState<TorrentState | null>(null);
@@ -390,6 +392,33 @@ export function useTorrentWS(options?: UseTorrentWSOptions): UseTorrentWSResult 
         if (parsed.state === "Seeding" && prevState !== "Seeding") {
           pushNotification(`${parsed.name} completed and entered seeding`, "success");
         }
+
+        if (typeof parsed.round === "number") {
+          const prevRound = previousRoundRef.current.get(parsed.info_hash);
+          if (typeof prevRound === "number" && parsed.round > prevRound) {
+            const swarmText =
+              typeof parsed.seeders === "number" || typeof parsed.leechers === "number"
+                ? ` | swarm s:${parsed.seeders ?? 0} l:${parsed.leechers ?? 0}`
+                : "";
+            pushNotification(
+              `${parsed.name}: round ${parsed.round} | peers ${parsed.connected_peers ?? 0}${swarmText}`,
+              "info",
+            );
+          }
+          previousRoundRef.current.set(parsed.info_hash, parsed.round);
+        }
+
+        if (typeof parsed.completed_pieces === "number" && typeof parsed.total_pieces === "number" && parsed.total_pieces > 0) {
+          const prevCompleted = previousPiecesRef.current.get(parsed.info_hash);
+          if (typeof prevCompleted === "number" && parsed.completed_pieces > prevCompleted) {
+            pushNotification(
+              `${parsed.name}: piece progress ${parsed.completed_pieces}/${parsed.total_pieces}`,
+              "info",
+            );
+          }
+          previousPiecesRef.current.set(parsed.info_hash, parsed.completed_pieces);
+        }
+
         previousStateRef.current.set(parsed.info_hash, parsed.state);
 
         seenAtRef.current.set(parsed.info_hash, now);

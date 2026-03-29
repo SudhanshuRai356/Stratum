@@ -7,6 +7,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -42,12 +43,15 @@ type startedDownload struct {
 	name          string
 	totalBytes    int64
 	outputPath    string
+	stateFile     string
 	state         string
 	lastTick      time.Time
 	lastSizeBytes int64
 	current       api.TorrentState
 	cmd           *exec.Cmd
 }
+
+const childStateEnv = "STRATUM_CHILD_STATE_FILE"
 
 type startedDownloadManager struct {
 	mu    sync.Mutex
@@ -107,6 +111,45 @@ func readFileSize(path string) int64 {
 		return 0
 	}
 	return info.Size()
+}
+
+func writeChildState(path string, state api.TorrentState) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, payload, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func readChildState(path string) (api.TorrentState, bool) {
+	if strings.TrimSpace(path) == "" {
+		return api.TorrentState{}, false
+	}
+
+	buf, err := os.ReadFile(path)
+	if err != nil {
+		return api.TorrentState{}, false
+	}
+
+	var state api.TorrentState
+	if err := json.Unmarshal(buf, &state); err != nil {
+		return api.TorrentState{}, false
+	}
+
+	if strings.TrimSpace(state.Name) == "" {
+		return api.TorrentState{}, false
+	}
+
+	return state, true
 }
 
 func clampProgress(value float64) float64 {
@@ -201,7 +244,8 @@ func startManagedDownload(source string, outputDir string, manager *startedDownl
 	}
 	manager.mu.Unlock()
 
-	cmd, err := startDetachedDownload(normalizedSource, outputDir)
+	stateFile := filepath.Join(os.TempDir(), fmt.Sprintf("stratum-child-state-%d-%d.json", time.Now().UnixNano(), rand.Intn(1000000)))
+	cmd, err := startDetachedDownload(normalizedSource, outputDir, stateFile)
 	if err != nil {
 		return nil, err
 	}
@@ -220,6 +264,7 @@ func startManagedDownload(source string, outputDir string, manager *startedDownl
 		name:          stateName,
 		totalBytes:    totalBytes,
 		outputPath:    outputPath,
+		stateFile:     stateFile,
 		state:         "Starting",
 		lastTick:      time.Now(),
 		lastSizeBytes: readFileSize(outputPath),
@@ -252,6 +297,22 @@ func (m *startedDownloadManager) snapshotAndUpdate() []api.TorrentState {
 	out := make([]api.TorrentState, 0, len(m.items))
 	now := time.Now()
 	for _, item := range m.items {
+		if childState, ok := readChildState(item.stateFile); ok {
+			if item.infoHash != "" && strings.TrimSpace(childState.InfoHash) == "" {
+				childState.InfoHash = item.infoHash
+			}
+			if strings.TrimSpace(childState.Name) == "" {
+				childState.Name = item.name
+			}
+			item.current = childState
+			item.state = childState.State
+			out = append(out, item.current)
+			if !processAlive(item.cmd) && item.current.State == "" {
+				item.current.State = "Stopped"
+			}
+			continue
+		}
+
 		currentSize := readFileSize(item.outputPath)
 		elapsed := now.Sub(item.lastTick).Seconds()
 		if elapsed <= 0 {
@@ -681,6 +742,16 @@ func isMagnetLink(input string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(input)), "magnet:?")
 }
 
+func sanitizeSourceInput(input string) string {
+	trimmed := strings.TrimSpace(input)
+	trimmed = strings.Trim(trimmed, "\"'`")
+	trimmed = strings.TrimSpace(trimmed)
+	if strings.HasPrefix(trimmed, "<") && strings.HasSuffix(trimmed, ">") {
+		trimmed = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+	}
+	return trimmed
+}
+
 func isTorrentInput(input string) bool {
 	trimmed := strings.TrimSpace(input)
 	if trimmed == "" {
@@ -753,7 +824,7 @@ func fetchTorrentURLToTemp(sourceURL string) (string, error) {
 }
 
 func normalizeStartSource(source string) (string, error) {
-	trimmed := strings.TrimSpace(source)
+	trimmed := sanitizeSourceInput(source)
 	if trimmed == "" {
 		return "", fmt.Errorf("source is required")
 	}
@@ -783,7 +854,7 @@ func normalizeStartSource(source string) (string, error) {
 }
 
 func validateStartSource(input string) error {
-	trimmed := strings.TrimSpace(input)
+	trimmed := sanitizeSourceInput(input)
 	if trimmed == "" {
 		return fmt.Errorf("source is required")
 	}
@@ -817,14 +888,14 @@ func writeUploadedTorrentToTemp(encodedTorrent string) (string, error) {
 	return file.Name(), nil
 }
 
-func startDetachedDownload(source string, outputDir string) (*exec.Cmd, error) {
+func startDetachedDownload(source string, outputDir string, stateFile string) (*exec.Cmd, error) {
 	executablePath, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve executable path: %w", err)
 	}
 
 	cmd := exec.Command(executablePath, "-o", outputDir, source)
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%s", childStateEnv, stateFile))
 
 	if err := cmd.Start(); err != nil {
 		return nil, err
@@ -1139,12 +1210,18 @@ func main() {
 		initialProgress = float64(completedCount) / float64(totalPieces) * 100.0
 	}
 	latestState.Store(api.TorrentState{
-		InfoHash:       fmt.Sprintf("%x", t.InfoHash),
-		Name:           t.Info.Name,
-		Progress:       initialProgress,
-		State:          "Downloading",
-		ConnectedPeers: len(peers),
+		InfoHash:        fmt.Sprintf("%x", t.InfoHash),
+		Name:            t.Info.Name,
+		Progress:        initialProgress,
+		State:           "Downloading",
+		ConnectedPeers:  len(peers),
+		Seeders:         0,
+		Leechers:        0,
+		CompletedPieces: completedCount,
+		TotalPieces:     totalPieces,
+		Round:           0,
 	})
+	_ = writeChildState(os.Getenv(childStateEnv), latestState.Load().(api.TorrentState))
 
 	fmt.Println("Starting local API bridge on 127.0.0.1:8080...")
 	fmt.Printf("API token: %s\n", api.GetAPIToken())
@@ -1398,14 +1475,26 @@ func main() {
 				}
 
 				state := api.TorrentState{
-					InfoHash:       fmt.Sprintf("%x", t.InfoHash),
-					Name:           t.Info.Name,
-					Progress:       progress,
-					DownloadSpeed:  downloadBPS,
-					State:          status,
-					ConnectedPeers: int(currentPeers.Load()),
+					InfoHash:        fmt.Sprintf("%x", t.InfoHash),
+					Name:            t.Info.Name,
+					Progress:        progress,
+					DownloadSpeed:   downloadBPS,
+					UploadSpeed:     uploadBPS,
+					State:           status,
+					ConnectedPeers:  int(currentPeers.Load()),
+					Seeders:         0,
+					Leechers:        0,
+					CompletedPieces: completed,
+					TotalPieces:     total,
+					Round:           int(currentRound.Load()),
+				}
+				seeders, leechers := tracker.LastSwarmStats()
+				if seeders > 0 || leechers > 0 {
+					state.Seeders = seeders
+					state.Leechers = leechers
 				}
 				latestState.Store(state)
+				_ = writeChildState(os.Getenv(childStateEnv), state)
 
 				if hub != nil {
 					select {
@@ -1573,12 +1662,23 @@ downloadLoop:
 	// Force a final UI update
 	if hub != nil {
 		state := api.TorrentState{
-			InfoHash: fmt.Sprintf("%x", t.InfoHash),
-			Name:     t.Info.Name,
-			Progress: 100.0,
-			State:    "Seeding",
+			InfoHash:        fmt.Sprintf("%x", t.InfoHash),
+			Name:            t.Info.Name,
+			Progress:        100.0,
+			State:           "Seeding",
+			Seeders:         0,
+			Leechers:        0,
+			CompletedPieces: totalPieces,
+			TotalPieces:     totalPieces,
+			Round:           int(currentRound.Load()),
+		}
+		seeders, leechers := tracker.LastSwarmStats()
+		if seeders > 0 || leechers > 0 {
+			state.Seeders = seeders
+			state.Leechers = leechers
 		}
 		latestState.Store(state)
+		_ = writeChildState(os.Getenv(childStateEnv), state)
 		select {
 		case hub.Broadcast <- state:
 		default:
@@ -1655,6 +1755,19 @@ func handleMagnetLink(magnetURI string) (*torrent.Torrent, error) {
 	}
 
 	fmt.Printf("Found %d peers for metadata exchange\n", len(peers))
+	stateFile := os.Getenv(childStateEnv)
+	if stateFile != "" {
+		seeders, leechers := tracker.LastSwarmStats()
+		_ = writeChildState(stateFile, api.TorrentState{
+			InfoHash:       fmt.Sprintf("%x", infoHash),
+			Name:           magnet.Name,
+			Progress:       0,
+			State:          "Fetching metadata",
+			ConnectedPeers: len(peers),
+			Seeders:        seeders,
+			Leechers:       leechers,
+		})
+	}
 
 	// Try to fetch metadata from peers
 	for i, pe := range peers {

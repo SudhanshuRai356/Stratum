@@ -14,6 +14,15 @@ type StartPayload = {
   filename?: string;
 };
 
+function normalizeSourceInput(value: string): string {
+  let next = value.trim();
+  next = next.replace(/^["'`]+|["'`]+$/g, "");
+  if (next.startsWith("<") && next.endsWith(">")) {
+    next = next.slice(1, -1).trim();
+  }
+  return next;
+}
+
 async function sendStartCommand(payload: StartPayload) {
   return callGoBackend<CommandResult>("/api/start", {
     method: "POST",
@@ -44,6 +53,27 @@ export default function StartDownloadBar() {
   const [hasError, setHasError] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const submitSource = async () => {
+    const source = normalizeSourceInput(startInput);
+    if (!source || starting) {
+      return;
+    }
+
+    setStarting(true);
+    setResult("");
+    setHasError(false);
+    try {
+      const response = await sendStartCommand({ source });
+      setResult(response.message ?? "Download process started.");
+      setStartInput("");
+    } catch (error) {
+      setHasError(true);
+      setResult(`Failed to start: ${String(error)}`);
+    } finally {
+      setStarting(false);
+    }
+  };
+
   return (
     <section className="panel reveal-up rounded-2xl p-4">
       <div className="mb-1 flex flex-wrap items-center gap-2">
@@ -52,33 +82,31 @@ export default function StartDownloadBar() {
           placeholder="Paste magnet link or .torrent path/url, press Enter"
           value={startInput}
           onChange={(event) => setStartInput(event.target.value)}
+          onPaste={(event) => {
+            const pasted = event.clipboardData.getData("text");
+            if (!pasted) {
+              return;
+            }
+            event.preventDefault();
+            setStartInput(normalizeSourceInput(pasted));
+          }}
           onKeyDown={async (event) => {
             if (event.key !== "Enter" || event.shiftKey) {
               return;
             }
             event.preventDefault();
-
-            const source = startInput.trim();
-            if (!source || starting) {
-              return;
-            }
-
-            setStarting(true);
-            setResult("");
-            setHasError(false);
-            try {
-              const response = await sendStartCommand({ source });
-              setResult(response.message ?? "Download process started.");
-              setStartInput("");
-            } catch (error) {
-              setHasError(true);
-              setResult(`Failed to start: ${String(error)}`);
-            } finally {
-              setStarting(false);
-            }
+            await submitSource();
           }}
           className="min-w-[18rem] flex-1 rounded-xl border border-white/12 bg-black/20 px-4 py-2 text-sm text-zinc-100 outline-none transition focus:border-[var(--bd-accent)]"
         />
+        <button
+          type="button"
+          onClick={submitSource}
+          disabled={starting}
+          className="rounded-xl border border-white/12 bg-black/25 px-3 py-2 text-sm text-zinc-200 transition hover:border-[var(--bd-accent)] hover:text-cyan-100 disabled:opacity-50"
+        >
+          Start
+        </button>
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
