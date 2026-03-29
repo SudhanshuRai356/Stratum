@@ -270,6 +270,8 @@ export function useTorrentWS(options?: UseTorrentWSOptions): UseTorrentWSResult 
           peers: Math.round(peersSmoothed),
           seeders,
           leechers,
+          cpuPercent: 0,
+          diskPercent: 0,
         };
         return [...prev, nextPoint].slice(-HISTORY_WINDOW);
       });

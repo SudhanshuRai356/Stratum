@@ -19,6 +19,15 @@ if [[ ! -d "$FRONTEND_DIR" ]]; then
   exit 1
 fi
 
+FRONTEND_CMD=(npm run dev)
+if [[ ! -f "$FRONTEND_DIR/package.json" ]]; then
+  if [[ -x "$FRONTEND_DIR/node_modules/.bin/next" ]]; then
+    FRONTEND_CMD=(./node_modules/.bin/next dev)
+  else
+    FRONTEND_CMD=(npx next dev)
+  fi
+fi
+
 cleanup() {
   trap - INT TERM EXIT
   if [[ -n "${GO_PID:-}" ]] && kill -0 "$GO_PID" >/dev/null 2>&1; then
@@ -42,7 +51,7 @@ GO_PID=$!
 echo "Starting frontend dev server..."
 (
   cd "$FRONTEND_DIR"
-  npm run dev
+  "${FRONTEND_CMD[@]}"
 ) &
 WEB_PID=$!
 

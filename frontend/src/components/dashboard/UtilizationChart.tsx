@@ -11,6 +11,7 @@ import {
   PointElement,
   Tooltip,
   type ChartOptions,
+  type ScriptableContext,
 } from "chart.js";
 import { Chart } from "react-chartjs-2";
 import SourceBadge from "@/components/ui/SourceBadge";
@@ -45,7 +46,7 @@ export default function UtilizationChart({ data }: UtilizationChartProps) {
         label: "Active Peers",
         data: data.map((point) => point.peers),
         yAxisID: "yPeers",
-        backgroundColor: (context: { chart: ChartJS<"bar" | "line"> }) => {
+        backgroundColor: (context: ScriptableContext<"bar">) => {
           const { chart } = context;
           const { ctx, chartArea } = chart;
           if (!chartArea) {
