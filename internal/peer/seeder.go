@@ -79,7 +79,15 @@ func (s *Seeder) Stop() {
 	s.running = false
 	s.mu.Unlock()
 
-	s.listener.Close()
+	_ = s.listener.Close()
+
+	// Close active peer sockets so serve loops unblock immediately.
+	s.peerMu.Lock()
+	for conn := range s.peers {
+		_ = conn.Close()
+	}
+	s.peerMu.Unlock()
+
 	s.activeConns.Wait() // wait for all active uploads to finish
 	fmt.Printf("Seeder stopped. Total uploaded: %d bytes\n", s.uploaded)
 }

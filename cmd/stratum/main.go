@@ -5,13 +5,20 @@ import (
 	"container/heap"
 	"context"
 	"crypto/sha1"
+	"encoding/base64"
+	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +35,276 @@ import (
 	"github.com/Kushal-39/Stratum/internal/tracker"
 	"github.com/Kushal-39/Stratum/internal/ui/tui"
 )
+
+type startedDownload struct {
+	key           string
+	infoHash      string
+	name          string
+	totalBytes    int64
+	outputPath    string
+	state         string
+	lastTick      time.Time
+	lastSizeBytes int64
+	current       api.TorrentState
+	cmd           *exec.Cmd
+}
+
+type startedDownloadManager struct {
+	mu    sync.Mutex
+	items map[string]*startedDownload
+}
+
+func newStartedDownloadManager() *startedDownloadManager {
+	return &startedDownloadManager{items: make(map[string]*startedDownload)}
+}
+
+func matchesDownload(item *startedDownload, query string) bool {
+	if strings.TrimSpace(query) == "" {
+		return false
+	}
+	q := strings.TrimSpace(query)
+	return item.key == q || item.infoHash == q
+}
+
+func (m *startedDownloadManager) stopByInfoHash(infoHash string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, item := range m.items {
+		if !matchesDownload(item, infoHash) {
+			continue
+		}
+
+		if processAlive(item.cmd) && item.cmd.Process != nil {
+			if err := item.cmd.Process.Kill(); err != nil {
+				return "", fmt.Errorf("failed to stop %s: %w", item.name, err)
+			}
+		}
+
+		item.state = "Stopped"
+		item.current.State = "Stopped"
+		item.current.DownloadSpeed = 0
+		return item.name, nil
+	}
+
+	return "", fmt.Errorf("no managed download found for %s", infoHash)
+}
+
+func processAlive(cmd *exec.Cmd) bool {
+	if cmd == nil || cmd.Process == nil {
+		return false
+	}
+	err := cmd.Process.Signal(syscall.Signal(0))
+	return err == nil
+}
+
+func readFileSize(path string) int64 {
+	if strings.TrimSpace(path) == "" {
+		return 0
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
+}
+
+func clampProgress(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	if value > 100 {
+		return 100
+	}
+	return value
+}
+
+func resolveStartMetadata(source string, outputDir string) (string, string, string, int64, string, error) {
+	trimmed := strings.TrimSpace(source)
+	if trimmed == "" {
+		return "", "", "", 0, "", fmt.Errorf("source is required")
+	}
+
+	if isMagnetLink(trimmed) {
+		mag, err := torrent.Parse_Mag_URL(trimmed)
+		if err != nil {
+			return "", "", "", 0, "", fmt.Errorf("invalid magnet link: %w", err)
+		}
+
+		infoHash := ""
+		if len(mag.Info_hash) == 20 {
+			infoHash = hex.EncodeToString(mag.Info_hash)
+		}
+
+		name := strings.TrimSpace(mag.Name)
+		if name == "" {
+			if infoHash != "" {
+				name = "magnet-" + infoHash[:12]
+			} else {
+				name = "magnet-download"
+			}
+		}
+
+		key := infoHash
+		if key == "" {
+			key = trimmed
+		}
+
+		return key, infoHash, name, 0, "", nil
+	}
+
+	t, err := torrent.ParseTorrent(trimmed)
+	if err != nil {
+		return "", "", "", 0, "", fmt.Errorf("failed to parse torrent input: %w", err)
+	}
+
+	absOutDir, err := filepath.Abs(outputDir)
+	if err != nil {
+		return "", "", "", 0, "", err
+	}
+
+	safeName, err := storage.SanitizeName(t.Info.Name)
+	if err != nil {
+		return "", "", "", 0, "", err
+	}
+
+	infoHash := hex.EncodeToString(t.InfoHash[:])
+	key := infoHash
+	if key == "" {
+		key = trimmed
+	}
+
+	return key, infoHash, t.Info.Name, t.Info.Length, filepath.Join(absOutDir, safeName), nil
+}
+
+func startManagedDownload(source string, outputDir string, manager *startedDownloadManager) (*startedDownload, error) {
+	if manager == nil {
+		return nil, fmt.Errorf("manager unavailable")
+	}
+
+	normalizedSource, err := normalizeStartSource(source)
+	if err != nil {
+		return nil, err
+	}
+
+	key, infoHash, name, totalBytes, outputPath, err := resolveStartMetadata(normalizedSource, outputDir)
+	if err != nil {
+		return nil, err
+	}
+
+	manager.mu.Lock()
+	if existing, ok := manager.items[key]; ok {
+		if processAlive(existing.cmd) {
+			manager.mu.Unlock()
+			return nil, fmt.Errorf("download already running for %s", existing.current.Name)
+		}
+	}
+	manager.mu.Unlock()
+
+	cmd, err := startDetachedDownload(normalizedSource, outputDir)
+	if err != nil {
+		return nil, err
+	}
+
+	stateName := strings.TrimSpace(name)
+	if stateName == "" || stateName == "." {
+		stateName = filepath.Base(outputPath)
+	}
+	if stateName == "" || stateName == "." {
+		stateName = "download"
+	}
+
+	entry := &startedDownload{
+		key:           key,
+		infoHash:      infoHash,
+		name:          stateName,
+		totalBytes:    totalBytes,
+		outputPath:    outputPath,
+		state:         "Starting",
+		lastTick:      time.Now(),
+		lastSizeBytes: readFileSize(outputPath),
+		cmd:           cmd,
+		current: api.TorrentState{
+			InfoHash:       infoHash,
+			Name:           stateName,
+			Progress:       0,
+			DownloadSpeed:  0,
+			State:          "Starting",
+			ConnectedPeers: 0,
+		},
+	}
+
+	manager.mu.Lock()
+	manager.items[key] = entry
+	manager.mu.Unlock()
+
+	go func(d *startedDownload) {
+		_ = d.cmd.Wait()
+	}(entry)
+
+	return entry, nil
+}
+
+func (m *startedDownloadManager) snapshotAndUpdate() []api.TorrentState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := make([]api.TorrentState, 0, len(m.items))
+	now := time.Now()
+	for _, item := range m.items {
+		currentSize := readFileSize(item.outputPath)
+		elapsed := now.Sub(item.lastTick).Seconds()
+		if elapsed <= 0 {
+			elapsed = 1
+		}
+
+		delta := currentSize - item.lastSizeBytes
+		if delta < 0 {
+			delta = 0
+		}
+
+		speed := float64(delta) / elapsed
+		progress := 0.0
+		if item.totalBytes > 0 {
+			progress = clampProgress((float64(currentSize) / float64(item.totalBytes)) * 100)
+		}
+
+		alive := processAlive(item.cmd)
+		state := "Downloading"
+		if !alive {
+			if item.totalBytes > 0 && currentSize >= item.totalBytes {
+				state = "Seeding"
+			} else {
+				state = "Stopped"
+			}
+		} else if item.totalBytes > 0 && currentSize >= item.totalBytes {
+			state = "Seeding"
+		}
+
+		if state != "Downloading" {
+			speed = 0
+		}
+
+		if item.infoHash != "" {
+			item.current.InfoHash = item.infoHash
+		} else {
+			item.current.InfoHash = item.key
+		}
+		item.current.Name = item.name
+		item.current.Progress = progress
+		item.current.DownloadSpeed = speed
+		item.current.State = state
+		item.current.ConnectedPeers = 0
+
+		item.lastTick = now
+		item.lastSizeBytes = currentSize
+		item.state = state
+
+		out = append(out, item.current)
+	}
+
+	return out
+}
 
 func HasPiece(bitfield []byte, pieceIndex uint32) bool {
 	if len(bitfield) == 0 {
@@ -382,6 +659,248 @@ func (a *ActiveRoundCanceller) Clear() {
 	a.mu.Unlock()
 }
 
+func openPathInSystem(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("empty path")
+	}
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", path)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", "", path)
+	default:
+		cmd = exec.Command("xdg-open", path)
+	}
+
+	return cmd.Start()
+}
+
+func isMagnetLink(input string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(input)), "magnet:?")
+}
+
+func isTorrentInput(input string) bool {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return false
+	}
+
+	lower := strings.ToLower(trimmed)
+	if strings.HasSuffix(lower, ".torrent") {
+		return true
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return false
+	}
+
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+
+	return strings.HasSuffix(strings.ToLower(parsed.Path), ".torrent")
+}
+
+func fetchTorrentURLToTemp(sourceURL string) (string, error) {
+	const maxTorrentBytes int64 = 16 << 20
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, sourceURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("invalid torrent url: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+
+	file, err := os.CreateTemp("", "stratum-remote-*.torrent")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temporary torrent file: %w", err)
+	}
+
+	defer func() {
+		_ = file.Close()
+	}()
+
+	limitedReader := &io.LimitedReader{R: resp.Body, N: maxTorrentBytes + 1}
+	written, err := io.Copy(file, limitedReader)
+	if err != nil {
+		_ = os.Remove(file.Name())
+		return "", fmt.Errorf("failed to read torrent response: %w", err)
+	}
+
+	if written == 0 {
+		_ = os.Remove(file.Name())
+		return "", fmt.Errorf("empty torrent file response")
+	}
+
+	if written > maxTorrentBytes {
+		_ = os.Remove(file.Name())
+		return "", fmt.Errorf("torrent file is too large")
+	}
+
+	return file.Name(), nil
+}
+
+func normalizeStartSource(source string) (string, error) {
+	trimmed := strings.TrimSpace(source)
+	if trimmed == "" {
+		return "", fmt.Errorf("source is required")
+	}
+
+	if isMagnetLink(trimmed) {
+		return trimmed, nil
+	}
+
+	if !isTorrentInput(trimmed) {
+		return "", fmt.Errorf("source must be a magnet link or .torrent path/url")
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return trimmed, nil
+	}
+
+	if parsed.Scheme == "http" || parsed.Scheme == "https" {
+		path, fetchErr := fetchTorrentURLToTemp(trimmed)
+		if fetchErr != nil {
+			return "", fmt.Errorf("failed to fetch torrent url: %w", fetchErr)
+		}
+		return path, nil
+	}
+
+	return trimmed, nil
+}
+
+func validateStartSource(input string) error {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return fmt.Errorf("source is required")
+	}
+	if isMagnetLink(trimmed) || isTorrentInput(trimmed) {
+		return nil
+	}
+	return fmt.Errorf("source must be a magnet link or .torrent path/url")
+}
+
+func writeUploadedTorrentToTemp(encodedTorrent string) (string, error) {
+	trimmed := strings.TrimSpace(encodedTorrent)
+	if trimmed == "" {
+		return "", fmt.Errorf("empty torrent data")
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("invalid torrent file encoding: %w", err)
+	}
+
+	file, err := os.CreateTemp("", "stratum-upload-*.torrent")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temporary torrent file: %w", err)
+	}
+	defer file.Close()
+
+	if _, err := file.Write(decoded); err != nil {
+		return "", fmt.Errorf("failed to write temporary torrent file: %w", err)
+	}
+
+	return file.Name(), nil
+}
+
+func startDetachedDownload(source string, outputDir string) (*exec.Cmd, error) {
+	executablePath, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve executable path: %w", err)
+	}
+
+	cmd := exec.Command(executablePath, "-o", outputDir, source)
+	cmd.Env = os.Environ()
+
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	return cmd, nil
+}
+
+func runAPIDaemonOnly(outputDir string) error {
+	fmt.Println("No initial torrent provided. Running in API-only mode.")
+	fmt.Println("Use frontend input bar to start magnet or .torrent downloads.")
+	fmt.Printf("API token: %s\n", api.GetAPIToken())
+	fmt.Println("Connect via: ws://127.0.0.1:8080/ws?token=" + api.GetAPIToken())
+
+	hub := api.NewHub()
+	go hub.Run()
+	manager := newStartedDownloadManager()
+
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			states := manager.snapshotAndUpdate()
+			for _, state := range states {
+				select {
+				case hub.Broadcast <- state:
+				default:
+				}
+			}
+		}
+	}()
+
+	return api.ListenAndServeWithConfig(api.ServerConfig{
+		Addr: "127.0.0.1:8080",
+		Hub:  hub,
+		HandleControl: func(payload api.ControlPayload) (string, error) {
+			action := strings.ToLower(strings.TrimSpace(payload.Action))
+			if action != "stop" {
+				return "", fmt.Errorf("only stop is available in daemon mode")
+			}
+
+			name, err := manager.stopByInfoHash(payload.InfoHash)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("stopped %s", name), nil
+		},
+		HandleStart: func(payload api.StartPayload) (string, error) {
+			source := strings.TrimSpace(payload.Source)
+			if source == "" {
+				tempPath, err := writeUploadedTorrentToTemp(payload.TorrentBase64)
+				if err != nil {
+					return "", err
+				}
+				source = tempPath
+			}
+
+			if err := validateStartSource(source); err != nil {
+				return "", err
+			}
+
+			download, err := startManagedDownload(source, outputDir, manager)
+			if err != nil {
+				return "", fmt.Errorf("failed to start download: %w", err)
+			}
+
+			if payload.Filename != "" {
+				return fmt.Sprintf("download process started for %s", payload.Filename), nil
+			}
+			return fmt.Sprintf("download process started for %s", download.name), nil
+		},
+		GetState: func() []api.TorrentState {
+			return manager.snapshotAndUpdate()
+		},
+	})
+}
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
@@ -393,16 +912,19 @@ func main() {
 	defer cancel()
 
 	if flag.NArg() < 1 {
-		fmt.Println("Usage: stratum [-o output_dir] [--ui=cli|tui] <path-to-.torrent-file-or-magnet-link>")
-		os.Exit(1)
+		if err := runAPIDaemonOnly(*outDir); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to start API daemon: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
-	input := flag.Arg(0)
+	input := strings.TrimSpace(flag.Arg(0))
 	var t *torrent.Torrent
 	var err error
 
 	// Detect if input is magnet link or torrent file
-	if strings.HasPrefix(input, "magnet:") {
+	if isMagnetLink(input) {
 		fmt.Println("Detected magnet link, fetching metadata...")
 		t, err = handleMagnetLink(input)
 		if err != nil {
@@ -410,17 +932,23 @@ func main() {
 			os.Exit(1)
 		}
 	} else {
-		if !strings.HasSuffix(strings.ToLower(input), ".torrent") {
+		if !isTorrentInput(input) {
 			fmt.Fprintf(os.Stderr, "invalid input: %q\n", input)
 			fmt.Fprintln(os.Stderr, "expected a .torrent file path or a magnet URI")
 			fmt.Fprintln(os.Stderr, "example: go run ./cmd/stratum --ui=tui ./archlinux-2026.03.01-x86_64.iso.torrent")
 			os.Exit(1)
 		}
 
+		normalizedInput, normalizeErr := normalizeStartSource(input)
+		if normalizeErr != nil {
+			fmt.Fprintf(os.Stderr, "failed to prepare torrent input %q: %v\n", input, normalizeErr)
+			os.Exit(1)
+		}
+
 		// Parse torrent file
-		t, err = torrent.ParseTorrent(input)
+		t, err = torrent.ParseTorrent(normalizedInput)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to parse torrent file %q: %v\n", input, err)
+			fmt.Fprintf(os.Stderr, "failed to parse torrent file %q: %v\n", normalizedInput, err)
 			os.Exit(1)
 		}
 	}
@@ -623,12 +1151,20 @@ func main() {
 	fmt.Println("Connect via: ws://127.0.0.1:8080/ws?token=" + api.GetAPIToken())
 	hub := api.NewHub()
 	go hub.Run()
+	startedManager := newStartedDownloadManager()
 	go func() {
 		if err := api.ListenAndServeWithConfig(api.ServerConfig{
 			Addr: "127.0.0.1:8080",
 			Hub:  hub,
 			HandleControl: func(payload api.ControlPayload) (string, error) {
 				action := strings.ToLower(strings.TrimSpace(payload.Action))
+				if action == "stop" && strings.TrimSpace(payload.InfoHash) != "" {
+					name, err := startedManager.stopByInfoHash(payload.InfoHash)
+					if err == nil {
+						return fmt.Sprintf("stopped %s", name), nil
+					}
+				}
+
 				var cmdType app.ControlCommandType
 				switch action {
 				case "pause":
@@ -654,15 +1190,49 @@ func main() {
 				}
 			},
 			GetState: func() []api.TorrentState {
+				startedStates := startedManager.snapshotAndUpdate()
 				v := latestState.Load()
 				if v == nil {
-					return []api.TorrentState{}
+					return startedStates
 				}
 				state, ok := v.(api.TorrentState)
 				if !ok {
-					return []api.TorrentState{}
+					return startedStates
 				}
-				return []api.TorrentState{state}
+				return append([]api.TorrentState{state}, startedStates...)
+			},
+			HandleOpen: func(payload api.OpenPayload) (string, error) {
+				if err := openPathInSystem(outputPath); err != nil {
+					return "", fmt.Errorf("failed to open completed path: %w", err)
+				}
+				if payload.InfoHash != "" {
+					return fmt.Sprintf("opened completed output for %s", payload.InfoHash), nil
+				}
+				return "opened completed output path", nil
+			},
+			HandleStart: func(payload api.StartPayload) (string, error) {
+				source := strings.TrimSpace(payload.Source)
+				if source == "" {
+					tempPath, err := writeUploadedTorrentToTemp(payload.TorrentBase64)
+					if err != nil {
+						return "", err
+					}
+					source = tempPath
+				}
+
+				if err := validateStartSource(source); err != nil {
+					return "", err
+				}
+
+				download, err := startManagedDownload(source, *outDir, startedManager)
+				if err != nil {
+					return "", fmt.Errorf("failed to start download: %w", err)
+				}
+
+				if payload.Filename != "" {
+					return fmt.Sprintf("download process started for %s", payload.Filename), nil
+				}
+				return fmt.Sprintf("download process started for %s", download.name), nil
 			},
 		}); err != nil {
 			fmt.Printf("API Server crashed: %v\n", err)
@@ -842,6 +1412,13 @@ func main() {
 					case hub.Broadcast <- state:
 					default:
 					}
+
+					for _, childState := range startedManager.snapshotAndUpdate() {
+						select {
+						case hub.Broadcast <- childState:
+						default:
+						}
+					}
 				}
 
 				eventBus.Publish(app.RuntimeEvent{
@@ -961,6 +1538,21 @@ downloadLoop:
 
 	if ctx.Err() != nil && !pm.allDone() {
 		fmt.Println("Download interrupted before completion")
+		if seeder != nil {
+			seeder.Stop()
+		}
+		if dhtClient != nil {
+			dhtClient.Stop()
+			dht_nodes = dhtClient.GetRoutingTable().GetAllNodes()
+		}
+		if len(dht_nodes) > 0 {
+			err = dht.SaveNodes(dht_node_path, dht_nodes)
+			if err != nil {
+				fmt.Printf("Failed to save DHT nodes: %v\n", err)
+			}
+		}
+		fmt.Println("Shutdown complete")
+		return
 	}
 	fmt.Println("\n=== All pieces downloaded successfully! ===")
 

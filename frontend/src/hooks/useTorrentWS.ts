@@ -27,10 +27,12 @@ type UseTorrentWSResult = {
 };
 
 const DEFAULT_RECONNECT_DELAY_MS = 1500;
-const HISTORY_WINDOW = 60;
+const HISTORY_WINDOW = 180;
 const TOTALS_STORAGE_KEY = "stratum.dashboard.totals";
 const MAX_NOTIFICATIONS = 25;
 const TRANSIENT_ZERO_GRACE_MS = 3500;
+const HISTORY_SAMPLE_INTERVAL_MS = 250;
+const SMOOTHING_ALPHA = 0.34;
 
 function isActiveState(state: string | undefined): boolean {
   return state === "Downloading" || state === "Seeding";
@@ -168,6 +170,7 @@ export function useTorrentWS(options?: UseTorrentWSOptions): UseTorrentWSResult 
   const wsRef = useRef<WebSocket | null>(null);
   const latestRef = useRef<TorrentState | null>(null);
   const torrentsRef = useRef<Record<string, TorrentState>>({});
+  const smoothRef = useRef({ downloadBps: 0, uploadBps: 0, peers: 0 });
   const seenAtRef = useRef<Map<string, number>>(new Map());
   const previousStateRef = useRef<Map<string, string>>(new Map());
 
@@ -230,51 +233,52 @@ export function useTorrentWS(options?: UseTorrentWSOptions): UseTorrentWSResult 
 
       const peers = activeTorrents.reduce((sum, torrent) => sum + Math.max(0, torrent.connected_peers || 0), 0);
       const seeders = activeTorrents.reduce((sum, torrent) => {
-        if (typeof torrent.seeders === "number") {
-          return sum + Math.max(0, torrent.seeders);
+        if (typeof torrent.seeders !== "number") {
+          return sum;
         }
-        return sum + Math.max(0, Math.floor((torrent.connected_peers || 0) * 0.65));
+        return sum + Math.max(0, torrent.seeders);
       }, 0);
       const leechers = activeTorrents.reduce((sum, torrent) => {
-        if (typeof torrent.leechers === "number") {
-          return sum + Math.max(0, torrent.leechers);
+        if (typeof torrent.leechers !== "number") {
+          return sum;
         }
-        const peerCount = Math.max(0, torrent.connected_peers || 0);
-        const estimatedSeeders = Math.max(0, Math.floor(peerCount * 0.65));
-        return sum + Math.max(0, peerCount - estimatedSeeders);
+        return sum + Math.max(0, torrent.leechers);
       }, 0);
-      const downloadBps = activeTorrents.reduce((sum, torrent) => sum + Math.max(0, torrent.download_speed || 0), 0);
-      const uploadBps = activeTorrents.reduce((sum, torrent) => {
+      const targetDownloadBps = activeTorrents.reduce((sum, torrent) => sum + Math.max(0, torrent.download_speed || 0), 0);
+      const targetUploadBps = activeTorrents.reduce((sum, torrent) => {
         const upload = torrent.upload_speed;
-        if (typeof upload === "number") {
-          return sum + Math.max(0, upload);
+        if (typeof upload !== "number") {
+          return sum;
         }
-        return sum + Math.max(0, (torrent.download_speed || 0) * 0.12);
+        return sum + Math.max(0, upload);
       }, 0);
 
-      // Estimate utilization until backend exposes direct runtime metrics.
-      const cpuPercent = Math.min(100, 10 + (downloadBps / (1024 * 1024)) * 12 + peers * 0.6);
-      const diskPercent = Math.min(100, 8 + (downloadBps / (1024 * 1024)) * 9 + peers * 0.45);
+      const smooth = smoothRef.current;
+      smooth.downloadBps = smooth.downloadBps + (targetDownloadBps - smooth.downloadBps) * SMOOTHING_ALPHA;
+      smooth.uploadBps = smooth.uploadBps + (targetUploadBps - smooth.uploadBps) * SMOOTHING_ALPHA;
+      smooth.peers = smooth.peers + (peers - smooth.peers) * SMOOTHING_ALPHA;
+
+      const downloadBps = Math.max(0, smooth.downloadBps);
+      const uploadBps = Math.max(0, smooth.uploadBps);
+      const peersSmoothed = Math.max(0, smooth.peers);
 
       setHistory((prev) => {
         const nextPoint: SpeedHistoryPoint = {
           ts: Date.now(),
           downloadBps,
           uploadBps,
-          peers,
+          peers: Math.round(peersSmoothed),
           seeders,
           leechers,
-          cpuPercent,
-          diskPercent,
         };
         return [...prev, nextPoint].slice(-HISTORY_WINDOW);
       });
 
       setTotals((prev) => ({
-        downloadedBytes: prev.downloadedBytes + downloadBps,
-        uploadedBytes: prev.uploadedBytes + uploadBps,
+        downloadedBytes: prev.downloadedBytes + (downloadBps * HISTORY_SAMPLE_INTERVAL_MS) / 1000,
+        uploadedBytes: prev.uploadedBytes + (uploadBps * HISTORY_SAMPLE_INTERVAL_MS) / 1000,
       }));
-    }, 1000);
+    }, HISTORY_SAMPLE_INTERVAL_MS);
 
     return () => {
       window.clearInterval(tick);

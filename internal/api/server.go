@@ -14,9 +14,14 @@ import (
 )
 
 var defaultAllowedOrigins = []string{
+	"http://127.0.0.1:3000",
+	"http://127.0.0.1:3001",
+	"http://127.0.0.1:1420",
 	"http://localhost:3000",
 	"http://localhost:3001",
 	"http://localhost:1420",
+	"https://tauri.localhost",
+	"http://tauri.localhost",
 	"tauri://localhost",
 }
 
@@ -42,12 +47,23 @@ type ControlPayload struct {
 	InfoHash string `json:"info_hash,omitempty"`
 }
 
+type OpenPayload struct {
+	InfoHash string `json:"info_hash,omitempty"`
+}
+
+type StartPayload struct {
+	Source        string `json:"source,omitempty"`
+	TorrentBase64 string `json:"torrent_base64,omitempty"`
+	Filename      string `json:"filename,omitempty"`
+}
 type ServerConfig struct {
 	Addr          string
 	Hub           *Hub
 	AllowedOrigin []string
 	GetState      func() []TorrentState
 	HandleControl func(payload ControlPayload) (string, error)
+	HandleOpen    func(payload OpenPayload) (string, error)
+	HandleStart   func(payload StartPayload) (string, error)
 }
 
 func normalizeAllowedOrigins(origins []string) map[string]struct{} {
@@ -226,6 +242,69 @@ func ListenAndServeWithConfig(cfg ServerConfig) error {
 		})
 	})
 
+	mux.HandleFunc("/api/open", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.HandleOpen == nil {
+			http.Error(w, "open not configured", http.StatusNotImplemented)
+			return
+		}
+
+		defer r.Body.Close()
+		var payload OpenPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "invalid payload", http.StatusBadRequest)
+			return
+		}
+
+		message, err := cfg.HandleOpen(payload)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"status":  "error",
+				"message": err.Error(),
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":  "ok",
+			"message": message,
+		})
+	})
+
+	mux.HandleFunc("/api/start", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.HandleStart == nil {
+			http.Error(w, "start not configured", http.StatusNotImplemented)
+			return
+		}
+
+		defer r.Body.Close()
+		var payload StartPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "invalid payload", http.StatusBadRequest)
+			return
+		}
+
+		message, err := cfg.HandleStart(payload)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"status":  "error",
+				"message": err.Error(),
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":  "ok",
+			"message": message,
+		})
+	})
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		handleWS(cfg.Hub, allowed, w, r)
 	})
