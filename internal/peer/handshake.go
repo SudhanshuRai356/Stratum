@@ -1,3 +1,18 @@
+/*
+BitTorrent Handshake Structure (Initial Connection):
+---------------------------------------------------------------------------
+| Field         | Size      | Description                                 |
+|---------------|-----------|---------------------------------------------|
+| PstrLen       | 1 byte    | Length of Pstr (Always 19 for BitTorrent)   |
+| Pstr          | 19 bytes  | Protocol identifier ("BitTorrent protocol")  |
+| Reserved      | 8 bytes   | Feature bits (e.g., bit 20 for BEP 10)       |
+| Info Hash     | 20 bytes  | SHA-1 hash of the torrent's info section    |
+| Peer ID       | 20 bytes  | Unique ID for the client sending the msg    |
+---------------------------------------------------------------------------
+
+Total Handshake Size: 68 bytes
+*/
+
 package peer
 
 import (
@@ -32,6 +47,7 @@ func PerformHandshake(p Peer, infoHash [20]byte, peerID [20]byte) (net.Conn, []b
 		return nil, nil, err
 	}
 	return conn, reserved, nil
+
 }
 
 func sendHandshake(conn net.Conn, infoHash [20]byte, peerID [20]byte) error {

@@ -1,3 +1,20 @@
+/*
+Piece Message Structure (ID 7):
+---------------------------------------------------------------------------
+| Field         | Size      | Description                                 |
+|---------------|-----------|---------------------------------------------|
+| Length Prefix | 4 bytes   | Total length of the message (Big Endian)    |
+| Message ID    | 1 byte    | Always 7                                    |
+| Index         | 4 bytes   | The zero-based index of the piece           |
+| Begin         | 4 bytes   | The byte offset within the piece            |
+| Block         | Variable  | The actual raw data (usually 16 KB)         |
+---------------------------------------------------------------------------
+
+Example of msg.Payload layout for ID 7:
+[ 0 1 2 3 | 4 5 6 7 | 8 ... ]
+  Index     Begin     Raw Data
+*/
+
 package peer
 
 import (

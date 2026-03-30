@@ -81,7 +81,7 @@ func SendExtHandshake(conn net.Conn, supportsExtensions bool) error {
 	ext_map := map[string]int{
 		"ut_metadata": 1,
 	}
-	ext_handshake := map[string]interface{}{
+	ext_handshake := map[string]any{
 		"m": ext_map,
 	}
 	var buf bytes.Buffer

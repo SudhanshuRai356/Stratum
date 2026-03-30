@@ -27,7 +27,7 @@ type rawTorrent struct {
 	Info         rawInfo    `bencode:"info"`
 }
 
-// ParserTorrent parses raw .torrent files, checks info hash integrity 
+// ParserTorrent parses raw .torrent files, checks info hash integrity
 // returns Torrent struct which we can use everywhere.
 func ParseTorrent(path string) (*Torrent, error) {
 	data, err := os.ReadFile(path)

@@ -33,7 +33,7 @@
 
 package torrent
 
-import(
+import (
 	"strings"
 )
 
