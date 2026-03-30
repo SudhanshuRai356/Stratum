@@ -6,6 +6,7 @@ import {
   FileCog,
   LayoutDashboard,
   Plug,
+  Search,
   ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
@@ -22,6 +23,7 @@ export type NavItem = {
 
 export const NAV_ITEMS: NavItem[] = [
   { id: "dashboard", label: "Dashboard", href: "/dashboard", icon: LayoutDashboard, source: "WS" },
+  { id: "search", label: "Search", href: "/search", icon: Search, source: "GO" },
   { id: "downloads", label: "Downloads", href: "/downloads", icon: ArrowDownToLine, source: "WS" },
   { id: "uploads", label: "Seeding", href: "/uploads", icon: ArrowUpToLine, source: "WS" },
   { id: "completed", label: "Completed", href: "/completed", icon: CheckCircle2, source: "FS" },

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/Kushal-39/Stratum/internal/plugins"
 )
 
 var defaultAllowedOrigins = []string{
@@ -57,13 +58,14 @@ type StartPayload struct {
 	Filename      string `json:"filename,omitempty"`
 }
 type ServerConfig struct {
-	Addr          string
-	Hub           *Hub
-	AllowedOrigin []string
-	GetState      func() []TorrentState
-	HandleControl func(payload ControlPayload) (string, error)
-	HandleOpen    func(payload OpenPayload) (string, error)
-	HandleStart   func(payload StartPayload) (string, error)
+	Addr           string
+	Hub            *Hub
+	AllowedOrigin  []string
+	GetState       func() []TorrentState
+	HandleControl  func(payload ControlPayload) (string, error)
+	HandleOpen     func(payload OpenPayload) (string, error)
+	HandleStart    func(payload StartPayload) (string, error)
+	PluginManager  interface{} // Will be cast to plugins.PluginManager
 }
 
 func normalizeAllowedOrigins(origins []string) map[string]struct{} {
@@ -308,6 +310,14 @@ func ListenAndServeWithConfig(cfg ServerConfig) error {
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		handleWS(cfg.Hub, allowed, w, r)
 	})
+
+	// Register plugin routes if plugin manager is provided
+	if cfg.PluginManager != nil {
+		if pluginMgr, ok := cfg.PluginManager.(plugins.PluginManager); ok {
+			pluginAPIServer := NewPluginAPIServer(pluginMgr)
+			pluginAPIServer.RegisterPluginRoutes(mux)
+		}
+	}
 
 	srv := &http.Server{
 		Addr:    cfg.Addr,

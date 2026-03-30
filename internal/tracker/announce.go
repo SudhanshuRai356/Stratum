@@ -18,7 +18,9 @@ func Announce(t *torrent.Torrent, left int64) ([]Peer, error) {
 	peerChan := make(chan []Peer, len(announceURLs))
 
 	for _, announceURL := range announceURLs {
-		wg.Go(func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 			var peers []Peer
 			var err error
 
@@ -38,7 +40,7 @@ func Announce(t *torrent.Torrent, left int64) ([]Peer, error) {
 				fmt.Printf("Tracker %s succeeded, got %d peers\n", announceURL, len(peers))
 				peerChan <- peers
 			}
-		})
+		}()
 	}
 
 	wg.Wait()

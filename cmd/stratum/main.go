@@ -905,6 +905,16 @@ func startDetachedDownload(source string, outputDir string, stateFile string) (*
 }
 
 func runAPIDaemonOnly(outputDir string) error {
+	// Initialize plugin system
+	if err := initializePluginSystem(outputDir); err != nil {
+		return fmt.Errorf("failed to initialize plugin system: %w", err)
+	}
+
+	// Start plugins
+	if err := startPlugins(); err != nil {
+		return fmt.Errorf("failed to start plugins: %w", err)
+	}
+
 	fmt.Println("No initial torrent provided. Running in API-only mode.")
 	fmt.Println("Use frontend input bar to start magnet or .torrent downloads.")
 	fmt.Printf("API token: %s\n", api.GetAPIToken())
@@ -931,6 +941,7 @@ func runAPIDaemonOnly(outputDir string) error {
 	return api.ListenAndServeWithConfig(api.ServerConfig{
 		Addr: "127.0.0.1:8080",
 		Hub:  hub,
+		PluginManager: getPluginManager(),
 		HandleControl: func(payload api.ControlPayload) (string, error) {
 			action := strings.ToLower(strings.TrimSpace(payload.Action))
 			if action != "stop" {
@@ -1223,6 +1234,17 @@ func main() {
 	})
 	_ = writeChildState(os.Getenv(childStateEnv), latestState.Load().(api.TorrentState))
 
+	// Initialize plugin system
+	if err := initializePluginSystem(*outDir); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize plugin system: %v\n", err)
+		// Continue anyway - plugins are optional
+	} else {
+		if err := startPlugins(); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to start plugins: %v\n", err)
+			// Continue anyway - plugins are optional
+		}
+	}
+
 	fmt.Println("Starting local API bridge on 127.0.0.1:8080...")
 	fmt.Printf("API token: %s\n", api.GetAPIToken())
 	fmt.Println("Connect via: ws://127.0.0.1:8080/ws?token=" + api.GetAPIToken())
@@ -1233,6 +1255,7 @@ func main() {
 		if err := api.ListenAndServeWithConfig(api.ServerConfig{
 			Addr: "127.0.0.1:8080",
 			Hub:  hub,
+			PluginManager: getPluginManager(),
 			HandleControl: func(payload api.ControlPayload) (string, error) {
 				action := strings.ToLower(strings.TrimSpace(payload.Action))
 				if action == "stop" && strings.TrimSpace(payload.InfoHash) != "" {
