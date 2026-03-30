@@ -32,8 +32,12 @@ export default function DashboardPage() {
       <section className="mx-auto w-full max-w-[1280px] space-y-6">
         <header className="reveal-up flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h2 className="text-3xl font-semibold tracking-tight text-zinc-100">Global Overview</h2>
-            <p className="mt-1 text-sm text-zinc-400">Live TorrentState stream from hub.go rendered at 1s intervals.</p>
+            <h1 className="stratum-wordmark text-5xl font-semibold leading-none tracking-[0.1em] text-white/15 md:text-7xl lg:text-8xl">
+              STRATUM
+            </h1>
+            <p className="mt-2 text-sm uppercase tracking-[0.12em] text-cyan-200/90">
+              Live swarm telemetry and control surface
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <SourceBadge source="WS" />

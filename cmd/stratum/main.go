@@ -220,26 +220,26 @@ func resolveStartMetadata(source string, outputDir string) (string, string, stri
 	return key, infoHash, t.Info.Name, t.Info.Length, filepath.Join(absOutDir, safeName), nil
 }
 
-func startManagedDownload(source string, outputDir string, manager *startedDownloadManager) (*startedDownload, error) {
+func startManagedDownload(source string, outputDir string, manager *startedDownloadManager) (*startedDownload, bool, error) {
 	if manager == nil {
-		return nil, fmt.Errorf("manager unavailable")
+		return nil, false, fmt.Errorf("manager unavailable")
 	}
 
 	normalizedSource, err := normalizeStartSource(source)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	key, infoHash, name, totalBytes, outputPath, err := resolveStartMetadata(normalizedSource, outputDir)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	manager.mu.Lock()
 	if existing, ok := manager.items[key]; ok {
 		if processAlive(existing.cmd) {
 			manager.mu.Unlock()
-			return nil, fmt.Errorf("download already running for %s", existing.current.Name)
+			return existing, true, nil
 		}
 	}
 	manager.mu.Unlock()
@@ -247,7 +247,7 @@ func startManagedDownload(source string, outputDir string, manager *startedDownl
 	stateFile := filepath.Join(os.TempDir(), fmt.Sprintf("stratum-child-state-%d-%d.json", time.Now().UnixNano(), rand.Intn(1000000)))
 	cmd, err := startDetachedDownload(normalizedSource, outputDir, stateFile)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	stateName := strings.TrimSpace(name)
@@ -287,7 +287,7 @@ func startManagedDownload(source string, outputDir string, manager *startedDownl
 		_ = d.cmd.Wait()
 	}(entry)
 
-	return entry, nil
+	return entry, false, nil
 }
 
 func (m *startedDownloadManager) snapshotAndUpdate() []api.TorrentState {
@@ -968,9 +968,12 @@ func runAPIDaemonOnly(outputDir string) error {
 				return "", err
 			}
 
-			download, err := startManagedDownload(source, outputDir, manager)
+			download, alreadyRunning, err := startManagedDownload(source, outputDir, manager)
 			if err != nil {
 				return "", fmt.Errorf("failed to start download: %w", err)
+			}
+			if alreadyRunning {
+				return fmt.Sprintf("download already running for %s", download.name), nil
 			}
 
 			if payload.Filename != "" {
@@ -1324,9 +1327,12 @@ func main() {
 					return "", err
 				}
 
-				download, err := startManagedDownload(source, *outDir, startedManager)
+				download, alreadyRunning, err := startManagedDownload(source, *outDir, startedManager)
 				if err != nil {
 					return "", fmt.Errorf("failed to start download: %w", err)
+				}
+				if alreadyRunning {
+					return fmt.Sprintf("download already running for %s", download.name), nil
 				}
 
 				if payload.Filename != "" {

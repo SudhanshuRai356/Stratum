@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { callGoBackend } from "@/lib/runtime";
 
 type CommandResult = {
@@ -47,6 +48,7 @@ async function fileToBase64(file: File): Promise<string> {
 }
 
 export default function StartDownloadBar() {
+  const router = useRouter();
   const [startInput, setStartInput] = useState("");
   const [starting, setStarting] = useState(false);
   const [result, setResult] = useState("");
@@ -66,6 +68,7 @@ export default function StartDownloadBar() {
       const response = await sendStartCommand({ source });
       setResult(response.message ?? "Download process started.");
       setStartInput("");
+      router.push("/dashboard");
     } catch (error) {
       setHasError(true);
       setResult(`Failed to start: ${String(error)}`);
@@ -97,13 +100,13 @@ export default function StartDownloadBar() {
             event.preventDefault();
             await submitSource();
           }}
-          className="min-w-[18rem] flex-1 rounded-xl border border-white/12 bg-black/20 px-4 py-2 text-sm text-zinc-100 outline-none transition focus:border-[var(--bd-accent)]"
+          className="min-w-[18rem] flex-1 rounded-xl border border-white/12 bg-black/20 px-4 py-2 text-sm text-zinc-100 outline-none transition focus:border-(--bd-accent)"
         />
         <button
           type="button"
           onClick={submitSource}
           disabled={starting}
-          className="rounded-xl border border-white/12 bg-black/25 px-3 py-2 text-sm text-zinc-200 transition hover:border-[var(--bd-accent)] hover:text-cyan-100 disabled:opacity-50"
+          className="stratum-button rounded-xl px-3 py-2 text-sm font-semibold tracking-wide"
         >
           Start
         </button>
@@ -111,7 +114,7 @@ export default function StartDownloadBar() {
           type="button"
           onClick={() => fileInputRef.current?.click()}
           disabled={starting}
-          className="rounded-xl border border-white/12 bg-black/25 px-3 py-2 text-sm text-zinc-200 transition hover:border-[var(--bd-accent)] hover:text-cyan-100 disabled:opacity-50"
+          className="stratum-button-secondary rounded-xl px-3 py-2 text-sm font-semibold tracking-wide disabled:opacity-50"
         >
           Choose .torrent
         </button>
@@ -140,6 +143,7 @@ export default function StartDownloadBar() {
                 filename: file.name,
               });
               setResult(response.message ?? `Started ${file.name}`);
+              router.push("/dashboard");
             } catch (error) {
               setHasError(true);
               setResult(`Failed to start torrent file: ${String(error)}`);
