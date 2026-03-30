@@ -34,8 +34,16 @@ const TRANSIENT_ZERO_GRACE_MS = 3500;
 const HISTORY_SAMPLE_INTERVAL_MS = 250;
 const SMOOTHING_ALPHA = 0.34;
 
+function makeFallbackInfoHash(name: string): string {
+  const normalized = name.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9:_-]/g, "");
+  if (normalized) {
+    return `pending:${normalized.slice(0, 120)}`;
+  }
+  return "pending:metadata";
+}
+
 function isActiveState(state: string | undefined): boolean {
-  return state === "Downloading" || state === "Seeding";
+  return state === "Starting" || state === "Downloading" || state === "Seeding";
 }
 
 function stabilizeOptionalNumber(nextValue: number | undefined, prevValue: number | undefined): number | undefined {
@@ -84,14 +92,22 @@ function toDefaultWSURL(apiBase: string): string {
 
 function safeParseState(raw: string): TorrentState | null {
   try {
-    const data = JSON.parse(raw) as TorrentState;
+    const data = JSON.parse(raw) as Partial<TorrentState>;
     if (typeof data !== "object" || data === null) {
       return null;
     }
-    if (typeof data.info_hash !== "string") {
+    if (typeof data.name !== "string") {
       return null;
     }
-    return data;
+
+    const incomingHash = typeof data.info_hash === "string" ? data.info_hash.trim() : "";
+    const pendingMetadata = incomingHash.length === 0;
+
+    return {
+      ...(data as TorrentState),
+      info_hash: incomingHash || makeFallbackInfoHash(data.name),
+      pending_metadata: pendingMetadata,
+    };
   } catch {
     return null;
   }
@@ -342,6 +358,7 @@ export function useTorrentWS(options?: UseTorrentWSOptions): UseTorrentWSResult 
           const stabilized: TorrentState = {
             ...previousTorrent,
             ...parsed,
+            client_seen_at: now,
             total_downloaded: stabilizeOptionalNumber(parsed.total_downloaded, previousTorrent?.total_downloaded),
             total_uploaded: stabilizeOptionalNumber(parsed.total_uploaded, previousTorrent?.total_uploaded),
             size_bytes: stabilizeOptionalNumber(parsed.size_bytes, previousTorrent?.size_bytes),

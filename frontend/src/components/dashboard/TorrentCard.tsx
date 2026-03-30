@@ -59,9 +59,9 @@ export default function TorrentCard({ torrent }: TorrentCardProps) {
         <span>↑ {formatSpeed(speedUp)}</span>
       </div>
 
-      <div className="mt-3 h-2 overflow-hidden rounded-full bg-cyan-950/60">
+      <div className="stratum-progress mt-3 h-2 overflow-hidden rounded-full bg-cyan-950/60">
         <div
-          className="h-full rounded-full bg-gradient-to-r from-cyan-300 to-cyan-500 transition-all duration-500"
+          className="h-full rounded-full bg-gradient-to-r from-cyan-300 via-sky-300 to-cyan-500 transition-all duration-500"
           style={{ width: `${Math.max(0, Math.min(100, torrent.progress))}%` }}
         />
       </div>
