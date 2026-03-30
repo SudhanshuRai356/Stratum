@@ -114,6 +114,7 @@ export default function DownloadsPage() {
                   </tr>
                 )}
                 {filtered.map((torrent) => {
+                  const pendingMetadata = torrent.pending_metadata || torrent.info_hash.startsWith("pending:");
                   const remaining = Math.max(0, 100 - torrent.progress);
                   const speed = Math.max(0, torrent.download_speed || 0);
                   const etaSeconds = speed > 0 ? ((torrent.size_bytes ?? 0) * (remaining / 100)) / speed : Infinity;
@@ -144,30 +145,34 @@ export default function DownloadsPage() {
                           : "-"}
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          {actionSetForState(torrent.state).map(({ action, label }) => (
-                            <button
-                              key={`${torrent.info_hash}-${action}`}
-                              type="button"
-                              disabled={busyHash === torrent.info_hash}
-                              onClick={async () => {
-                                setBusyHash(torrent.info_hash);
-                                setResult("");
-                                try {
-                                  const response = await sendTorrentCommand(torrent.info_hash, action);
-                                  setResult(response.message ?? `Command ${action} sent for ${torrent.name}`);
-                                } catch (error) {
-                                  setResult(`Failed to ${action}: ${String(error)}`);
-                                } finally {
-                                  setBusyHash(null);
-                                }
-                              }}
-                              className="rounded-lg border border-white/12 bg-black/25 px-2 py-1 text-xs text-zinc-200 transition hover:border-[var(--bd-accent)] hover:text-cyan-100 disabled:opacity-50"
-                            >
-                              {label}
-                            </button>
-                          ))}
-                        </div>
+                        {pendingMetadata ? (
+                          <p className="text-xs text-amber-200">fetching metadata...</p>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            {actionSetForState(torrent.state).map(({ action, label }) => (
+                              <button
+                                key={`${torrent.info_hash}-${action}`}
+                                type="button"
+                                disabled={busyHash === torrent.info_hash}
+                                onClick={async () => {
+                                  setBusyHash(torrent.info_hash);
+                                  setResult("");
+                                  try {
+                                    const response = await sendTorrentCommand(torrent.info_hash, action);
+                                    setResult(response.message ?? `Command ${action} sent for ${torrent.name}`);
+                                  } catch (error) {
+                                    setResult(`Failed to ${action}: ${String(error)}`);
+                                  } finally {
+                                    setBusyHash(null);
+                                  }
+                                }}
+                                className="rounded-lg border border-white/12 bg-black/25 px-2 py-1 text-xs text-zinc-200 transition hover:border-[var(--bd-accent)] hover:text-cyan-100 disabled:opacity-50"
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );

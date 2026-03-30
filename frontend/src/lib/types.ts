@@ -18,6 +18,8 @@ export type TorrentState = {
   round?: number;
   size_bytes?: number;
   category?: string;
+  client_seen_at?: number;
+  pending_metadata?: boolean;
 };
 
 export type WebSocketConnectionStatus =
