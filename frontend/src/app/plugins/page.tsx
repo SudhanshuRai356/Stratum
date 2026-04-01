@@ -14,6 +14,20 @@ interface PluginStatus {
   capabilities?: string[];
 }
 
+interface ScanResult {
+  info_hash: string;
+  file_name: string;
+  sha1: string;
+  sha256: string;
+  detection_rate: string;
+  total_engines: number;
+  detections: number;
+  scan_date: string;
+  permalink: string;
+  status: string;
+  error?: string;
+}
+
 interface PluginData {
   [key: string]: PluginStatus;
 }
@@ -21,6 +35,7 @@ interface PluginData {
 export default function PluginsPage() {
   const { notifications } = useDashboardData();
   const [plugins, setPlugins] = useState<PluginData>({});
+  const [scanResults, setScanResults] = useState<ScanResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [apiToken, setApiToken] = useState<string | null>(null);
@@ -57,13 +72,32 @@ export default function PluginsPage() {
     }
   }, [apiToken]);
 
+  const fetchScanResults = useCallback(async () => {
+    if (!apiToken) return;
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:8080/api/plugins/virustotal/results?token=${apiToken}`
+      );
+      if (!response.ok) return;
+      const data = await response.json();
+      setScanResults(data.results || []);
+    } catch {
+      // Silently ignore — VT plugin may not be running
+    }
+  }, [apiToken]);
+
   useEffect(() => {
     if (apiToken) {
       fetchPlugins();
-      const interval = setInterval(fetchPlugins, 5000); // Refresh every 5 seconds
+      fetchScanResults();
+      const interval = setInterval(() => {
+        fetchPlugins();
+        fetchScanResults();
+      }, 5000);
       return () => clearInterval(interval);
     }
-  }, [apiToken, fetchPlugins]);
+  }, [apiToken, fetchPlugins, fetchScanResults]);
 
   const handleStartPlugin = async (pluginName: string) => {
     try {
@@ -231,6 +265,92 @@ export default function PluginsPage() {
             ))}
           </section>
         )}
+
+        {/* VirusTotal Scan Results */}
+        <section className="mt-8 space-y-4">
+          <header className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-zinc-100">VirusTotal Scan Results</h3>
+            {scanResults.length > 0 && (
+              <span className="rounded-full bg-cyan-500/10 px-2 py-1 text-xs text-cyan-300 border border-cyan-500/20">
+                {scanResults.length} scanned
+              </span>
+            )}
+          </header>
+
+          {scanResults.length === 0 ? (
+            <div className="rounded-lg border border-white/10 bg-black/25 p-8 text-center">
+              <p className="text-sm text-zinc-400">No scans yet — results appear when a torrent finishes downloading.</p>
+              <p className="mt-1 text-xs text-zinc-500">Set <code className="text-cyan-400">VT_API_KEY</code> env var for real scans, or use mock mode.</p>
+            </div>
+          ) : (
+          <div className="grid gap-4 md:grid-cols-2">
+              {scanResults.map((result) => (
+                <article
+                  key={result.info_hash}
+                  className="panel rounded-2xl p-4 space-y-3"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-zinc-200 truncate">
+                        {result.file_name || result.info_hash}
+                      </p>
+                      <p className="mt-0.5 text-xs text-zinc-500 font-mono truncate">
+                        {result.sha1}
+                      </p>
+                    </div>
+                    <span
+                      className={[
+                        "rounded-full px-2 py-1 text-xs font-semibold whitespace-nowrap",
+                        result.status === "clean"
+                          ? "bg-emerald-500/20 text-emerald-300"
+                          : result.status === "suspicious"
+                            ? "bg-yellow-500/20 text-yellow-300"
+                            : result.status === "malicious"
+                              ? "bg-red-500/20 text-red-300"
+                              : result.status === "error"
+                                ? "bg-red-500/20 text-red-400"
+                                : "bg-zinc-500/20 text-zinc-400",
+                      ].join(" ")}
+                    >
+                      {result.status}
+                    </span>
+                  </div>
+
+                  {result.status !== "error" && result.status !== "not_found" && (
+                    <div className="flex items-center gap-4 text-xs">
+                      <div>
+                        <span className="text-zinc-500">Detection: </span>
+                        <span className="font-semibold text-zinc-200">
+                          {result.detection_rate}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-500">Engines: </span>
+                        <span className="font-semibold text-zinc-200">
+                          {result.total_engines}
+                        </span>
+                      </div>
+                      {result.scan_date && (
+                        <div>
+                          <span className="text-zinc-500">Scanned: </span>
+                          <span className="font-semibold text-zinc-200">
+                            {new Date(result.scan_date).toLocaleDateString()}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {result.error && (
+                    <div className="rounded-lg bg-red-500/10 border border-red-500/20 p-2">
+                      <p className="text-xs text-red-400">{result.error}</p>
+                    </div>
+                  )}
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
 
         <div className="mt-8 rounded-lg border border-white/10 bg-black/25 p-6">
           <h3 className="text-lg font-semibold text-zinc-100 mb-4">Built-in Plugins</h3>

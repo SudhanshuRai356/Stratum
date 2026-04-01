@@ -31,6 +31,7 @@ import (
 	"github.com/Kushal-39/Stratum/internal/app"
 	"github.com/Kushal-39/Stratum/internal/dht"
 	"github.com/Kushal-39/Stratum/internal/peer"
+	"github.com/Kushal-39/Stratum/internal/plugins"
 	"github.com/Kushal-39/Stratum/internal/storage"
 	"github.com/Kushal-39/Stratum/internal/torrent"
 	"github.com/Kushal-39/Stratum/internal/tracker"
@@ -38,17 +39,18 @@ import (
 )
 
 type startedDownload struct {
-	key           string
-	infoHash      string
-	name          string
-	totalBytes    int64
-	outputPath    string
-	stateFile     string
-	state         string
-	lastTick      time.Time
-	lastSizeBytes int64
-	current       api.TorrentState
-	cmd           *exec.Cmd
+	key                   string
+	infoHash              string
+	name                  string
+	totalBytes            int64
+	outputPath            string
+	stateFile             string
+	state                 string
+	lastTick              time.Time
+	lastSizeBytes         int64
+	current               api.TorrentState
+	cmd                   *exec.Cmd
+	completedEventEmitted bool
 }
 
 const childStateEnv = "STRATUM_CHILD_STATE_FILE"
@@ -306,6 +308,25 @@ func (m *startedDownloadManager) snapshotAndUpdate() []api.TorrentState {
 			}
 			item.current = childState
 			item.state = childState.State
+
+			// Emit plugin event on first transition to Seeding
+			if childState.State == "Seeding" && !item.completedEventEmitted {
+				item.completedEventEmitted = true
+				if pmgr := getPluginManager(); pmgr != nil {
+					fmt.Println("Download complete — notifying plugins")
+					pmgr.EmitEvent(plugins.Event{
+						Type:      plugins.EventTorrentCompleted,
+						Timestamp: time.Now().Unix(),
+						Data: map[string]interface{}{
+							"torrent": map[string]interface{}{
+								"info_hash": item.current.InfoHash,
+								"name":      item.current.Name,
+							},
+						},
+					})
+				}
+			}
+
 			out = append(out, item.current)
 			if !processAlive(item.cmd) && item.current.State == "" {
 				item.current.State = "Stopped"
@@ -360,6 +381,24 @@ func (m *startedDownloadManager) snapshotAndUpdate() []api.TorrentState {
 		item.lastTick = now
 		item.lastSizeBytes = currentSize
 		item.state = state
+
+		// Emit plugin event on first transition to Seeding
+		if state == "Seeding" && !item.completedEventEmitted {
+			item.completedEventEmitted = true
+			if pmgr := getPluginManager(); pmgr != nil {
+				fmt.Println("Download complete — notifying plugins")
+				pmgr.EmitEvent(plugins.Event{
+					Type:      plugins.EventTorrentCompleted,
+					Timestamp: time.Now().Unix(),
+					Data: map[string]interface{}{
+						"torrent": map[string]interface{}{
+							"info_hash": item.current.InfoHash,
+							"name":      item.current.Name,
+						},
+					},
+				})
+			}
+		}
 
 		out = append(out, item.current)
 	}
@@ -905,8 +944,11 @@ func startDetachedDownload(source string, outputDir string, stateFile string) (*
 }
 
 func runAPIDaemonOnly(outputDir string) error {
+	// Create download manager first (plugins need access to it)
+	manager := newStartedDownloadManager()
+
 	// Initialize plugin system
-	if err := initializePluginSystem(outputDir); err != nil {
+	if err := initializePluginSystem(outputDir, manager); err != nil {
 		return fmt.Errorf("failed to initialize plugin system: %w", err)
 	}
 
@@ -922,7 +964,6 @@ func runAPIDaemonOnly(outputDir string) error {
 
 	hub := api.NewHub()
 	go hub.Run()
-	manager := newStartedDownloadManager()
 
 	go func() {
 		ticker := time.NewTicker(1 * time.Second)
@@ -939,8 +980,8 @@ func runAPIDaemonOnly(outputDir string) error {
 	}()
 
 	return api.ListenAndServeWithConfig(api.ServerConfig{
-		Addr: "127.0.0.1:8080",
-		Hub:  hub,
+		Addr:          "127.0.0.1:8080",
+		Hub:           hub,
 		PluginManager: getPluginManager(),
 		HandleControl: func(payload api.ControlPayload) (string, error) {
 			action := strings.ToLower(strings.TrimSpace(payload.Action))
@@ -1237,8 +1278,15 @@ func main() {
 	})
 	_ = writeChildState(os.Getenv(childStateEnv), latestState.Load().(api.TorrentState))
 
+	fmt.Println("Starting local API bridge on 127.0.0.1:8080...")
+	fmt.Printf("API token: %s\n", api.GetAPIToken())
+	fmt.Println("Connect via: ws://127.0.0.1:8080/ws?token=" + api.GetAPIToken())
+	hub := api.NewHub()
+	go hub.Run()
+	startedManager := newStartedDownloadManager()
+
 	// Initialize plugin system
-	if err := initializePluginSystem(*outDir); err != nil {
+	if err := initializePluginSystem(*outDir, startedManager); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to initialize plugin system: %v\n", err)
 		// Continue anyway - plugins are optional
 	} else {
@@ -1248,16 +1296,10 @@ func main() {
 		}
 	}
 
-	fmt.Println("Starting local API bridge on 127.0.0.1:8080...")
-	fmt.Printf("API token: %s\n", api.GetAPIToken())
-	fmt.Println("Connect via: ws://127.0.0.1:8080/ws?token=" + api.GetAPIToken())
-	hub := api.NewHub()
-	go hub.Run()
-	startedManager := newStartedDownloadManager()
 	go func() {
 		if err := api.ListenAndServeWithConfig(api.ServerConfig{
-			Addr: "127.0.0.1:8080",
-			Hub:  hub,
+			Addr:          "127.0.0.1:8080",
+			Hub:           hub,
 			PluginManager: getPluginManager(),
 			HandleControl: func(payload api.ControlPayload) (string, error) {
 				action := strings.ToLower(strings.TrimSpace(payload.Action))
@@ -1713,6 +1755,24 @@ downloadLoop:
 		default:
 		}
 		eventBus.Publish(app.RuntimeEvent{Type: app.EventState, Timestamp: time.Now(), Severity: app.SeverityInfo, State: state, Message: "entered seeding mode", Completed: totalPieces, Total: totalPieces, ActivePeers: int(currentPeers.Load())})
+
+		// Notify plugins that torrent completed
+		if pmgr := getPluginManager(); pmgr != nil {
+			fmt.Println("Notifying plugins: torrent completed")
+			pmgr.EmitEvent(plugins.Event{
+				Type:      plugins.EventTorrentCompleted,
+				Timestamp: time.Now().Unix(),
+				Data: map[string]interface{}{
+					"torrent": map[string]interface{}{
+						"info_hash": fmt.Sprintf("%x", t.InfoHash),
+						"name":      t.Info.Name,
+						"size":      t.Info.Length,
+					},
+				},
+			})
+		} else {
+			fmt.Println("WARNING: plugin manager is nil, cannot emit completion event")
+		}
 	}
 
 	// Keep process alive and stay in the tracker's peer list

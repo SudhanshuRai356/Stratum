@@ -69,6 +69,8 @@ func (pas *PluginAPIServer) handlePluginAction(w http.ResponseWriter, r *http.Re
 		pas.handlePluginRestart(w, r, pluginName)
 	case "config":
 		pas.handlePluginConfig(w, r, pluginName)
+	case "results":
+		pas.handlePluginResults(w, r, pluginName)
 	default:
 		http.Error(w, "Unknown plugin action", http.StatusBadRequest)
 	}
@@ -148,6 +150,42 @@ func (pas *PluginAPIServer) handlePluginRestart(w http.ResponseWriter, r *http.R
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"message": fmt.Sprintf("Plugin %s restarted successfully", pluginName),
+	})
+}
+
+// handlePluginResults handles GET /api/plugins/{name}/results
+func (pas *PluginAPIServer) handlePluginResults(w http.ResponseWriter, r *http.Request, pluginName string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	plugin, err := pas.pluginManager.GetPlugin(pluginName)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	// Type-assert to VirusTotalPlugin to get results
+	type resultProvider interface {
+		GetAllScanResults() []plugins.ScanResult
+	}
+
+	if provider, ok := plugin.(resultProvider); ok {
+		results := provider.GetAllScanResults()
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"results": results,
+			"count":   len(results),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"results": []plugins.ScanResult{},
+		"count":   0,
+		"message": "Plugin does not provide scan results",
 	})
 }
 
@@ -237,8 +275,8 @@ func (pas *PluginAPIServer) handleSearch(w http.ResponseWriter, r *http.Request)
 		}
 
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"results": results,
-			"query":   payload.Query,
+			"results":  results,
+			"query":    payload.Query,
 			"category": payload.Category,
 		})
 		return
@@ -298,8 +336,8 @@ func (pas *PluginAPIServer) handleStartStream(w http.ResponseWriter, r *http.Req
 
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"stream_url": streamURL,
-			"info_hash": payload.InfoHash,
-			"file_path": payload.FilePath,
+			"info_hash":  payload.InfoHash,
+			"file_path":  payload.FilePath,
 		})
 		return
 	}
@@ -373,9 +411,9 @@ func (pas *PluginAPIServer) handleGetStream(w http.ResponseWriter, r *http.Reque
 			if err == nil {
 				writeJSON(w, http.StatusOK, map[string]interface{}{
 					"stream_url": streamURL,
-					"info_hash": infoHash,
+					"info_hash":  infoHash,
 					"file_index": fileIndex,
-					"available": streamServer.IsStreamingAvailable(infoHash),
+					"available":  streamServer.IsStreamingAvailable(infoHash),
 				})
 				return
 			}
@@ -383,8 +421,8 @@ func (pas *PluginAPIServer) handleGetStream(w http.ResponseWriter, r *http.Reque
 	}
 
 	writeJSON(w, http.StatusNotFound, map[string]interface{}{
-		"error": "Stream not found",
-		"info_hash": infoHash,
+		"error":      "Stream not found",
+		"info_hash":  infoHash,
 		"file_index": fileIndex,
 	})
 }
