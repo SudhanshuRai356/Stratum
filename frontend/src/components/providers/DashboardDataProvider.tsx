@@ -12,6 +12,7 @@ type DashboardDataValue = ReturnType<typeof useTorrentWS> & {
 };
 
 const DashboardDataContext = createContext<DashboardDataValue | null>(null);
+const STOPPED_GRACE_MS = 90_000;
 
 function sortByName(torrents: TorrentState[]): TorrentState[] {
   return [...torrents].sort((a, b) => a.name.localeCompare(b.name));
@@ -21,8 +22,21 @@ export function DashboardDataProvider({ children }: { children: ReactNode }) {
   const ws = useTorrentWS();
 
   const value = useMemo<DashboardDataValue>(() => {
+    const referenceNow = ws.lastMessageAt ?? 0;
     const activeTorrents = sortByName(
-      ws.torrents.filter((torrent) => torrent.state === "Downloading" || torrent.state === "Seeding"),
+      ws.torrents.filter(
+        (torrent) => {
+          if (torrent.state === "Starting" || torrent.state === "Downloading" || torrent.state === "Seeding") {
+            return true;
+          }
+
+          if (torrent.state === "Stopped" && torrent.progress < 100 && typeof torrent.client_seen_at === "number") {
+            return referenceNow > 0 && referenceNow - torrent.client_seen_at <= STOPPED_GRACE_MS;
+          }
+
+          return false;
+        },
+      ),
     );
     const completedTorrents = sortByName(ws.torrents.filter((torrent) => torrent.progress >= 100));
     const seedingTorrents = sortByName(ws.torrents.filter((torrent) => torrent.state === "Seeding"));

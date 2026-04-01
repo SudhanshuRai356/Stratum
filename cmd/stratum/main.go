@@ -220,26 +220,26 @@ func resolveStartMetadata(source string, outputDir string) (string, string, stri
 	return key, infoHash, t.Info.Name, t.Info.Length, filepath.Join(absOutDir, safeName), nil
 }
 
-func startManagedDownload(source string, outputDir string, manager *startedDownloadManager) (*startedDownload, error) {
+func startManagedDownload(source string, outputDir string, manager *startedDownloadManager) (*startedDownload, bool, error) {
 	if manager == nil {
-		return nil, fmt.Errorf("manager unavailable")
+		return nil, false, fmt.Errorf("manager unavailable")
 	}
 
 	normalizedSource, err := normalizeStartSource(source)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	key, infoHash, name, totalBytes, outputPath, err := resolveStartMetadata(normalizedSource, outputDir)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	manager.mu.Lock()
 	if existing, ok := manager.items[key]; ok {
 		if processAlive(existing.cmd) {
 			manager.mu.Unlock()
-			return nil, fmt.Errorf("download already running for %s", existing.current.Name)
+			return existing, true, nil
 		}
 	}
 	manager.mu.Unlock()
@@ -247,7 +247,7 @@ func startManagedDownload(source string, outputDir string, manager *startedDownl
 	stateFile := filepath.Join(os.TempDir(), fmt.Sprintf("stratum-child-state-%d-%d.json", time.Now().UnixNano(), rand.Intn(1000000)))
 	cmd, err := startDetachedDownload(normalizedSource, outputDir, stateFile)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	stateName := strings.TrimSpace(name)
@@ -287,7 +287,7 @@ func startManagedDownload(source string, outputDir string, manager *startedDownl
 		_ = d.cmd.Wait()
 	}(entry)
 
-	return entry, nil
+	return entry, false, nil
 }
 
 func (m *startedDownloadManager) snapshotAndUpdate() []api.TorrentState {
@@ -905,6 +905,16 @@ func startDetachedDownload(source string, outputDir string, stateFile string) (*
 }
 
 func runAPIDaemonOnly(outputDir string) error {
+	// Initialize plugin system
+	if err := initializePluginSystem(outputDir); err != nil {
+		return fmt.Errorf("failed to initialize plugin system: %w", err)
+	}
+
+	// Start plugins
+	if err := startPlugins(); err != nil {
+		return fmt.Errorf("failed to start plugins: %w", err)
+	}
+
 	fmt.Println("No initial torrent provided. Running in API-only mode.")
 	fmt.Println("Use frontend input bar to start magnet or .torrent downloads.")
 	fmt.Printf("API token: %s\n", api.GetAPIToken())
@@ -931,6 +941,7 @@ func runAPIDaemonOnly(outputDir string) error {
 	return api.ListenAndServeWithConfig(api.ServerConfig{
 		Addr: "127.0.0.1:8080",
 		Hub:  hub,
+		PluginManager: getPluginManager(),
 		HandleControl: func(payload api.ControlPayload) (string, error) {
 			action := strings.ToLower(strings.TrimSpace(payload.Action))
 			if action != "stop" {
@@ -957,9 +968,12 @@ func runAPIDaemonOnly(outputDir string) error {
 				return "", err
 			}
 
-			download, err := startManagedDownload(source, outputDir, manager)
+			download, alreadyRunning, err := startManagedDownload(source, outputDir, manager)
 			if err != nil {
 				return "", fmt.Errorf("failed to start download: %w", err)
+			}
+			if alreadyRunning {
+				return fmt.Sprintf("download already running for %s", download.name), nil
 			}
 
 			if payload.Filename != "" {
@@ -1223,6 +1237,17 @@ func main() {
 	})
 	_ = writeChildState(os.Getenv(childStateEnv), latestState.Load().(api.TorrentState))
 
+	// Initialize plugin system
+	if err := initializePluginSystem(*outDir); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize plugin system: %v\n", err)
+		// Continue anyway - plugins are optional
+	} else {
+		if err := startPlugins(); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to start plugins: %v\n", err)
+			// Continue anyway - plugins are optional
+		}
+	}
+
 	fmt.Println("Starting local API bridge on 127.0.0.1:8080...")
 	fmt.Printf("API token: %s\n", api.GetAPIToken())
 	fmt.Println("Connect via: ws://127.0.0.1:8080/ws?token=" + api.GetAPIToken())
@@ -1233,6 +1258,7 @@ func main() {
 		if err := api.ListenAndServeWithConfig(api.ServerConfig{
 			Addr: "127.0.0.1:8080",
 			Hub:  hub,
+			PluginManager: getPluginManager(),
 			HandleControl: func(payload api.ControlPayload) (string, error) {
 				action := strings.ToLower(strings.TrimSpace(payload.Action))
 				if action == "stop" && strings.TrimSpace(payload.InfoHash) != "" {
@@ -1301,9 +1327,12 @@ func main() {
 					return "", err
 				}
 
-				download, err := startManagedDownload(source, *outDir, startedManager)
+				download, alreadyRunning, err := startManagedDownload(source, *outDir, startedManager)
 				if err != nil {
 					return "", fmt.Errorf("failed to start download: %w", err)
+				}
+				if alreadyRunning {
+					return fmt.Sprintf("download already running for %s", download.name), nil
 				}
 
 				if payload.Filename != "" {
