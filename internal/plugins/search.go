@@ -128,21 +128,23 @@ func (p *SearchPlugin) Initialize(ctx context.Context, config map[string]interfa
 	}
 
 	if enabledVal, ok := config["enabled_providers"]; ok {
-		if enabled, ok := enabledVal.([]interface{}); ok {
-			p.enabledProviders = make([]string, len(enabled))
-			for i, provider := range enabled {
+		switch enabled := enabledVal.(type) {
+		case []interface{}:
+			providers := make([]string, 0, len(enabled))
+			for _, provider := range enabled {
 				if providerName, ok := provider.(string); ok {
-					p.enabledProviders[i] = providerName
+					providers = append(providers, providerName)
 				}
 			}
+			p.enabledProviders = providers
+		case []string:
+			p.enabledProviders = append([]string(nil), enabled...)
 		}
 	}
 
-	// Default to all providers if none specified
+	// Default to Pirate Bay only.
 	if len(p.enabledProviders) == 0 {
-		for name := range p.providers {
-			p.enabledProviders = append(p.enabledProviders, name)
-		}
+		p.enabledProviders = []string{"the-pirate-bay"}
 	}
 
 	p.healthy = true
@@ -280,25 +282,25 @@ func (p *SearchPlugin) GetProviderName() string {
 func (p *SearchPlugin) initializeDefaultProviders() {
 	// The Pirate Bay - JSON API (working)
 	p.providers["the-pirate-bay"] = SearchProviderConfig{
-		Name:      "The Pirate Bay",
-		BaseURL:   "https://apibay.org",
+		Name:       "The Pirate Bay",
+		BaseURL:    "https://apibay.org",
 		SearchPath: "/q.php",
 		Categories: map[string]string{
-			"all":     "",
-			"video":   "200",
-			"audio":   "100",
-			"apps":    "300",
-			"games":   "400",
-			"other":   "600",
+			"all":   "",
+			"video": "200",
+			"audio": "100",
+			"apps":  "300",
+			"games": "400",
+			"other": "600",
 		},
-		Enabled:   false, // DISABLED to test LimeTorrents only
+		Enabled:   true,
 		RateLimit: 1 * time.Second,
 	}
 
 	// YTS (Movies) - JSON API with fallback domains
 	p.providers["yts"] = SearchProviderConfig{
-		Name:      "YTS",
-		BaseURL:   "https://yts.lt",
+		Name:    "YTS",
+		BaseURL: "https://yts.lt",
 		FallbackURLs: []string{
 			"https://yts.am",
 			"https://yts.ag",
@@ -315,8 +317,8 @@ func (p *SearchPlugin) initializeDefaultProviders() {
 
 	// Nyaa (Anime) - RSS feed with mirrors
 	p.providers["nyaa"] = SearchProviderConfig{
-		Name:      "Nyaa",
-		BaseURL:   "https://nyaa.si",
+		Name:    "Nyaa",
+		BaseURL: "https://nyaa.si",
 		FallbackURLs: []string{
 			"https://nyaa.land",
 			"https://nyaa.iss.one",
@@ -335,8 +337,8 @@ func (p *SearchPlugin) initializeDefaultProviders() {
 
 	// TorrentGalaxy with fallback domains
 	p.providers["torrentgalaxy"] = SearchProviderConfig{
-		Name:      "TorrentGalaxy",
-		BaseURL:   "https://torrentgalaxy.to",
+		Name:    "TorrentGalaxy",
+		BaseURL: "https://torrentgalaxy.to",
 		FallbackURLs: []string{
 			"https://torrentgalaxy.mx",
 			"https://torrentgalaxy.org",
@@ -355,8 +357,8 @@ func (p *SearchPlugin) initializeDefaultProviders() {
 
 	// EZTV (TV Shows) - Has API
 	p.providers["eztv"] = SearchProviderConfig{
-		Name:      "EZTV",
-		BaseURL:   "https://eztv.re",
+		Name:       "EZTV",
+		BaseURL:    "https://eztv.re",
 		SearchPath: "/api/get-torrents",
 		Categories: map[string]string{
 			"all": "",
@@ -368,8 +370,8 @@ func (p *SearchPlugin) initializeDefaultProviders() {
 
 	// 1337x - Popular general tracker with fallback domains
 	p.providers["1337x"] = SearchProviderConfig{
-		Name:      "1337x",
-		BaseURL:   "https://1337x.to",
+		Name:    "1337x",
+		BaseURL: "https://1337x.to",
 		FallbackURLs: []string{
 			"https://1337x.st",
 			"https://x1337x.ws",
@@ -384,14 +386,14 @@ func (p *SearchPlugin) initializeDefaultProviders() {
 			"music":  "Music",
 			"apps":   "Apps",
 		},
-		Enabled:   false, // DISABLED - Cloudflare protection blocks all requests
+		Enabled:   false,           // DISABLED - Cloudflare protection blocks all requests
 		RateLimit: 5 * time.Second, // More respectful rate limit
 	}
 
 	// LimeTorrents - General tracker with multiple domains
 	p.providers["limetorrents"] = SearchProviderConfig{
-		Name:      "LimeTorrents",
-		BaseURL:   "https://www.limetorrents.fun", // UPDATED working domain
+		Name:    "LimeTorrents",
+		BaseURL: "https://www.limetorrents.fun", // UPDATED working domain
 		FallbackURLs: []string{
 			"https://www.limetorrents.lol",
 			"https://www.limetorrents.zone",
@@ -407,7 +409,7 @@ func (p *SearchPlugin) initializeDefaultProviders() {
 			"games":  "games",
 			"apps":   "applications",
 		},
-		Enabled:   true, // ENABLED for testing with improved parsing
+		Enabled:   false,
 		RateLimit: 5 * time.Second, // More respectful rate limit
 	}
 }
@@ -780,11 +782,11 @@ func (p *SearchPlugin) parseYTSResponse(resp *http.Response, providerName string
 		Status string `json:"status"`
 		Data   struct {
 			Movies []struct {
-				Title         string `json:"title"`
-				Year          int    `json:"year"`
-				Rating        float64 `json:"rating"`
-				Summary       string `json:"summary"`
-				Torrents      []struct {
+				Title    string  `json:"title"`
+				Year     int     `json:"year"`
+				Rating   float64 `json:"rating"`
+				Summary  string  `json:"summary"`
+				Torrents []struct {
 					Hash    string `json:"hash"`
 					Quality string `json:"quality"`
 					Type    string `json:"type"`
@@ -1059,6 +1061,7 @@ func (p *SearchPlugin) DisableProvider(name string) error {
 
 	return nil
 }
+
 // parse1337xResponse scrapes 1337x HTML search results and detail pages
 func (p *SearchPlugin) parse1337xResponse(resp *http.Response, providerName string) ([]SearchResult, error) {
 	body, err := io.ReadAll(resp.Body)
@@ -1068,19 +1071,19 @@ func (p *SearchPlugin) parse1337xResponse(resp *http.Response, providerName stri
 
 	html := string(body)
 	parser := NewHTMLParser(p.client)
-	
+
 	var results []SearchResult
-	
+
 	// Parse search results table
 	// 1337x format: <tr> rows in search results table
 	rows := parser.ExtractAllBetween(html, "<tr", "</tr>")
-	
+
 	for _, row := range rows {
 		// Skip header row
 		if strings.Contains(row, "<th") {
 			continue
 		}
-		
+
 		// Extract torrent detail page link
 		detailLinkMatch := extractBetween(row, `href="/torrent/`, `"`)
 		if detailLinkMatch == "" {
@@ -1089,40 +1092,40 @@ func (p *SearchPlugin) parse1337xResponse(resp *http.Response, providerName stri
 		if detailLinkMatch == "" {
 			continue
 		}
-		
+
 		detailURL := "https://1337x.to/torrent/" + detailLinkMatch
-		
+
 		// Extract title
 		titleHTML := extractBetween(row, `<td class="name">`, `</td>`)
 		if titleHTML == "" {
 			titleHTML = extractBetween(row, `<td class="coll-1 name">`, `</td>`)
 		}
 		title := parser.StripHTMLTags(titleHTML)
-		
+
 		if title == "" {
 			continue
 		}
-		
+
 		// Extract seeders and leechers from the row
 		seedersStr := extractBetween(row, `<td class="coll-2 seeds">`, `</td>`)
 		if seedersStr == "" {
 			seedersStr = extractBetween(row, `<td class="seeds">`, `</td>`)
 		}
 		seeders, _ := strconv.Atoi(strings.TrimSpace(parser.StripHTMLTags(seedersStr)))
-		
+
 		leechersStr := extractBetween(row, `<td class="coll-3 leeches">`, `</td>`)
 		if leechersStr == "" {
 			leechersStr = extractBetween(row, `<td class="leeches">`, `</td>`)
 		}
 		leechers, _ := strconv.Atoi(strings.TrimSpace(parser.StripHTMLTags(leechersStr)))
-		
+
 		// Extract size
 		sizeStr := extractBetween(row, `<td class="coll-4 size">`, `</td>`)
 		if sizeStr == "" {
 			sizeStr = extractBetween(row, `<td class="size">`, `</td>`)
 		}
 		size := parser.ParseFileSize(parser.StripHTMLTags(sizeStr))
-		
+
 		// Now scrape the detail page for magnet and .torrent links
 		result := SearchResult{
 			Name:     title,
@@ -1132,14 +1135,14 @@ func (p *SearchPlugin) parse1337xResponse(resp *http.Response, providerName stri
 			Size:     size,
 			Category: "all",
 		}
-		
+
 		// Fetch detail page (with error handling)
 		if detailHTML, err := parser.FetchHTML(detailURL); err == nil {
 			// Extract magnet link
 			magnetLink := parser.ExtractMagnetLink(detailHTML)
 			if magnetLink != "" {
 				result.MagnetLink = magnetLink
-				
+
 				// Extract info hash from magnet
 				if hashIdx := strings.Index(magnetLink, "btih:"); hashIdx >= 0 {
 					hash := magnetLink[hashIdx+5:]
@@ -1149,20 +1152,20 @@ func (p *SearchPlugin) parse1337xResponse(resp *http.Response, providerName stri
 					result.InfoHash = strings.ToLower(hash)
 				}
 			}
-			
+
 			// Extract .torrent download link
 			torrentDownload := parser.ExtractTorrentDownloadLink(detailHTML, "https://1337x.to")
 			if torrentDownload != "" {
 				result.TorrentURL = torrentDownload
 			}
 		}
-		
+
 		// Only add if we have at least a magnet link or torrent URL
 		if result.MagnetLink != "" || result.TorrentURL != "" {
 			results = append(results, result)
 		}
 	}
-	
+
 	return results, nil
 }
 
@@ -1175,42 +1178,42 @@ func (p *SearchPlugin) parseLimeTorrentsResponse(resp *http.Response, providerNa
 
 	html := string(body)
 	parser := NewHTMLParser(p.client)
-	
+
 	var results []SearchResult
-	
+
 	// LimeTorrents uses table rows for results
 	rows := parser.ExtractAllBetween(html, "<tr", "</tr>")
-	
+
 	for _, row := range rows {
 		// Skip non-data rows
 		if !strings.Contains(row, "tt-name") {
 			continue
 		}
-		
+
 		// Extract title and detail link
 		titleSection := extractBetween(row, `<div class="tt-name">`, `</div>`)
 		detailLink := extractBetween(titleSection, `href="`, `"`)
 		title := parser.StripHTMLTags(titleSection)
-		
+
 		if title == "" || detailLink == "" {
 			continue
 		}
-		
+
 		// Build full URL using the actual provider base URL
 		if !strings.HasPrefix(detailLink, "http") {
 			detailLink = "https://www.limetorrents.fun" + detailLink
 		}
-		
+
 		// Extract stats
 		seedsStr := extractBetween(row, `<td class="tdseed">`, `</td>`)
 		seeds, _ := strconv.Atoi(strings.TrimSpace(parser.StripHTMLTags(seedsStr)))
-		
+
 		leechStr := extractBetween(row, `<td class="tdleech">`, `</td>`)
 		leeches, _ := strconv.Atoi(strings.TrimSpace(parser.StripHTMLTags(leechStr)))
-		
+
 		sizeStr := extractBetween(row, `<td class="tdnormal">`, `</td>`)
 		size := parser.ParseFileSize(parser.StripHTMLTags(sizeStr))
-		
+
 		result := SearchResult{
 			Name:     title,
 			Provider: providerName,
@@ -1219,12 +1222,12 @@ func (p *SearchPlugin) parseLimeTorrentsResponse(resp *http.Response, providerNa
 			Size:     size,
 			Category: "all",
 		}
-		
+
 		// Fetch detail page
 		if detailHTML, err := parser.FetchHTML(detailLink); err == nil {
 			// Extract magnet
 			result.MagnetLink = parser.ExtractMagnetLink(detailHTML)
-			
+
 			// Extract info hash
 			if result.MagnetLink != "" {
 				if hashIdx := strings.Index(result.MagnetLink, "btih:"); hashIdx >= 0 {
@@ -1235,16 +1238,16 @@ func (p *SearchPlugin) parseLimeTorrentsResponse(resp *http.Response, providerNa
 					result.InfoHash = strings.ToLower(hash)
 				}
 			}
-			
+
 			// Extract .torrent link using the actual provider base URL
 			result.TorrentURL = parser.ExtractTorrentDownloadLink(detailHTML, "https://www.limetorrents.fun")
 		}
-		
+
 		if result.MagnetLink != "" || result.TorrentURL != "" {
 			results = append(results, result)
 		}
 	}
-	
+
 	return results, nil
 }
 
@@ -1255,11 +1258,11 @@ func extractBetween(text, start, end string) string {
 		return ""
 	}
 	startIdx += len(start)
-	
+
 	endIdx := strings.Index(text[startIdx:], end)
 	if endIdx == -1 {
 		return ""
 	}
-	
+
 	return text[startIdx : startIdx+endIdx]
 }

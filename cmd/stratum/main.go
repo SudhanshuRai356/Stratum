@@ -1290,6 +1290,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "failed to initialize plugin system: %v\n", err)
 		// Continue anyway - plugins are optional
 	} else {
+		registerPluginTorrentFiles(
+			fmt.Sprintf("%x", t.InfoHash),
+			buildPluginTorrentFileList(outputPath, storageFiles),
+		)
+
 		if err := startPlugins(); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to start plugins: %v\n", err)
 			// Continue anyway - plugins are optional
