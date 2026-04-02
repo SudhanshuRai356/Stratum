@@ -26,7 +26,12 @@ export function DashboardDataProvider({ children }: { children: ReactNode }) {
     const activeTorrents = sortByName(
       ws.torrents.filter(
         (torrent) => {
-          if (torrent.state === "Starting" || torrent.state === "Downloading" || torrent.state === "Seeding") {
+          if (
+            torrent.state === "Starting" ||
+            torrent.state === "Fetching metadata" ||
+            torrent.state === "Downloading" ||
+            torrent.state === "Seeding"
+          ) {
             return true;
           }
 

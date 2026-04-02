@@ -40,9 +40,11 @@ import (
 
 type startedDownload struct {
 	key                   string
+	source                string
 	infoHash              string
 	name                  string
 	totalBytes            int64
+	outputDir             string
 	outputPath            string
 	stateFile             string
 	state                 string
@@ -68,8 +70,8 @@ func matchesDownload(item *startedDownload, query string) bool {
 	if strings.TrimSpace(query) == "" {
 		return false
 	}
-	q := strings.TrimSpace(query)
-	return item.key == q || item.infoHash == q
+	q := strings.ToLower(strings.TrimSpace(query))
+	return strings.ToLower(strings.TrimSpace(item.key)) == q || strings.ToLower(strings.TrimSpace(item.infoHash)) == q
 }
 
 func (m *startedDownloadManager) stopByInfoHash(infoHash string) (string, error) {
@@ -87,13 +89,61 @@ func (m *startedDownloadManager) stopByInfoHash(infoHash string) (string, error)
 			}
 		}
 
+		if strings.TrimSpace(item.stateFile) != "" {
+			_ = os.Remove(item.stateFile)
+			item.stateFile = ""
+		}
+
 		item.state = "Stopped"
 		item.current.State = "Stopped"
 		item.current.DownloadSpeed = 0
+		item.current.UploadSpeed = 0
 		return item.name, nil
 	}
 
 	return "", fmt.Errorf("no managed download found for %s", infoHash)
+}
+
+func (m *startedDownloadManager) resumeByInfoHash(infoHash string) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, item := range m.items {
+		if !matchesDownload(item, infoHash) {
+			continue
+		}
+
+		if processAlive(item.cmd) {
+			return item.name, true, nil
+		}
+
+		if strings.TrimSpace(item.source) == "" {
+			return "", false, fmt.Errorf("cannot resume %s: missing source", item.name)
+		}
+
+		stateFile := filepath.Join(os.TempDir(), fmt.Sprintf("stratum-child-state-%d-%d.json", time.Now().UnixNano(), rand.Intn(1000000)))
+		cmd, err := startDetachedDownload(item.source, item.outputDir, stateFile)
+		if err != nil {
+			return "", false, fmt.Errorf("failed to resume %s: %w", item.name, err)
+		}
+
+		item.cmd = cmd
+		item.stateFile = stateFile
+		item.state = "Starting"
+		item.current.State = "Starting"
+		item.current.DownloadSpeed = 0
+		item.current.UploadSpeed = 0
+		item.lastTick = time.Now()
+		item.lastSizeBytes = readFileSize(item.outputPath)
+
+		go func(d *startedDownload) {
+			_ = d.cmd.Wait()
+		}(item)
+
+		return item.name, false, nil
+	}
+
+	return "", false, fmt.Errorf("no managed download found for %s", infoHash)
 }
 
 func processAlive(cmd *exec.Cmd) bool {
@@ -262,9 +312,11 @@ func startManagedDownload(source string, outputDir string, manager *startedDownl
 
 	entry := &startedDownload{
 		key:           key,
+		source:        normalizedSource,
 		infoHash:      infoHash,
 		name:          stateName,
 		totalBytes:    totalBytes,
+		outputDir:     outputDir,
 		outputPath:    outputPath,
 		stateFile:     stateFile,
 		state:         "Starting",
@@ -300,12 +352,26 @@ func (m *startedDownloadManager) snapshotAndUpdate() []api.TorrentState {
 	now := time.Now()
 	for _, item := range m.items {
 		if childState, ok := readChildState(item.stateFile); ok {
+			alive := processAlive(item.cmd)
+
 			if item.infoHash != "" && strings.TrimSpace(childState.InfoHash) == "" {
 				childState.InfoHash = item.infoHash
 			}
 			if strings.TrimSpace(childState.Name) == "" {
 				childState.Name = item.name
 			}
+
+			if !alive {
+				switch strings.ToLower(strings.TrimSpace(childState.State)) {
+				case "", "starting", "downloading", "fetching metadata":
+					childState.State = "Stopped"
+				}
+			}
+			if strings.ToLower(strings.TrimSpace(childState.State)) != "downloading" {
+				childState.DownloadSpeed = 0
+				childState.UploadSpeed = 0
+			}
+
 			item.current = childState
 			item.state = childState.State
 
@@ -328,7 +394,7 @@ func (m *startedDownloadManager) snapshotAndUpdate() []api.TorrentState {
 			}
 
 			out = append(out, item.current)
-			if !processAlive(item.cmd) && item.current.State == "" {
+			if !alive && item.current.State == "" {
 				item.current.State = "Stopped"
 			}
 			continue
@@ -985,15 +1051,29 @@ func runAPIDaemonOnly(outputDir string) error {
 		PluginManager: getPluginManager(),
 		HandleControl: func(payload api.ControlPayload) (string, error) {
 			action := strings.ToLower(strings.TrimSpace(payload.Action))
-			if action != "stop" {
-				return "", fmt.Errorf("only stop is available in daemon mode")
+			if strings.TrimSpace(payload.InfoHash) == "" {
+				return "", fmt.Errorf("info_hash is required")
 			}
 
-			name, err := manager.stopByInfoHash(payload.InfoHash)
-			if err != nil {
-				return "", err
+			switch action {
+			case "stop":
+				name, err := manager.stopByInfoHash(payload.InfoHash)
+				if err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("stopped %s", name), nil
+			case "resume":
+				name, alreadyRunning, err := manager.resumeByInfoHash(payload.InfoHash)
+				if err != nil {
+					return "", err
+				}
+				if alreadyRunning {
+					return fmt.Sprintf("already running %s", name), nil
+				}
+				return fmt.Sprintf("resumed %s", name), nil
+			default:
+				return "", fmt.Errorf("unsupported action %q in daemon mode", action)
 			}
-			return fmt.Sprintf("stopped %s", name), nil
 		},
 		HandleStart: func(payload api.StartPayload) (string, error) {
 			source := strings.TrimSpace(payload.Source)
@@ -1308,10 +1388,21 @@ func main() {
 			PluginManager: getPluginManager(),
 			HandleControl: func(payload api.ControlPayload) (string, error) {
 				action := strings.ToLower(strings.TrimSpace(payload.Action))
-				if action == "stop" && strings.TrimSpace(payload.InfoHash) != "" {
-					name, err := startedManager.stopByInfoHash(payload.InfoHash)
-					if err == nil {
-						return fmt.Sprintf("stopped %s", name), nil
+				if strings.TrimSpace(payload.InfoHash) != "" {
+					switch action {
+					case "stop":
+						name, err := startedManager.stopByInfoHash(payload.InfoHash)
+						if err == nil {
+							return fmt.Sprintf("stopped %s", name), nil
+						}
+					case "resume":
+						name, alreadyRunning, err := startedManager.resumeByInfoHash(payload.InfoHash)
+						if err == nil {
+							if alreadyRunning {
+								return fmt.Sprintf("already running %s", name), nil
+							}
+							return fmt.Sprintf("resumed %s", name), nil
+						}
 					}
 				}
 
@@ -1839,12 +1930,48 @@ func handleMagnetLink(magnetURI string) (*torrent.Torrent, error) {
 		}
 	}
 
-	peers, err := tracker.Announce(tempTorrent, 0)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get peers from tracker: %w", err)
+	peers, trackerErr := tracker.Announce(tempTorrent, 0)
+	if trackerErr != nil {
+		fmt.Printf("Tracker peer discovery failed: %v\n", trackerErr)
 	}
 
 	if len(peers) == 0 {
+		fmt.Println("No peers from trackers, trying DHT peer discovery...")
+
+		dhtClient, dhtErr := dht.NewClient(0)
+		if dhtErr != nil {
+			fmt.Printf("Failed to create DHT client for metadata lookup: %v\n", dhtErr)
+		} else {
+			defer dhtClient.Stop()
+			if err := dhtClient.Start(); err != nil {
+				fmt.Printf("Failed to start DHT client for metadata lookup: %v\n", err)
+			} else {
+				if err := dhtClient.Bootstrap(nil); err != nil {
+					fmt.Printf("DHT bootstrap failed for metadata lookup: %v\n", err)
+				} else {
+					// Give routing table a brief moment before querying peers.
+					time.Sleep(750 * time.Millisecond)
+					dhtPeers := dhtClient.GetPeers(infoHash)
+					for _, addr := range dhtPeers {
+						host, portStr, splitErr := net.SplitHostPort(addr)
+						if splitErr != nil {
+							continue
+						}
+						port, convErr := strconv.Atoi(portStr)
+						if convErr != nil || port <= 0 || port > 65535 {
+							continue
+						}
+						peers = append(peers, tracker.Peer{IP: host, Port: uint16(port)})
+					}
+				}
+			}
+		}
+	}
+
+	if len(peers) == 0 {
+		if trackerErr != nil {
+			return nil, fmt.Errorf("no peers available for metadata exchange (tracker error: %w)", trackerErr)
+		}
 		return nil, fmt.Errorf("no peers available for metadata exchange")
 	}
 

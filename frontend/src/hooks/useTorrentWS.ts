@@ -43,7 +43,12 @@ function makeFallbackInfoHash(name: string): string {
 }
 
 function isActiveState(state: string | undefined): boolean {
-  return state === "Starting" || state === "Downloading" || state === "Seeding";
+  return (
+    state === "Starting" ||
+    state === "Fetching metadata" ||
+    state === "Downloading" ||
+    state === "Seeding"
+  );
 }
 
 function stabilizeOptionalNumber(nextValue: number | undefined, prevValue: number | undefined): number | undefined {

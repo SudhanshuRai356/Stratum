@@ -56,6 +56,33 @@ type SearchProviderConfig struct {
 	FieldMappings  map[string]string `json:"field_mappings"`
 }
 
+var defaultMagnetTrackers = []string{
+	"udp://tracker.opentrackr.org:1337/announce",
+	"udp://open.stealth.si:80/announce",
+	"udp://tracker.torrent.eu.org:451/announce",
+	"udp://exodus.desync.com:6969/announce",
+	"udp://tracker.openbittorrent.com:6969/announce",
+}
+
+func buildMagnetURI(infoHash string, name string, trackers []string) string {
+	params := url.Values{}
+	params.Set("xt", "urn:btih:"+strings.TrimSpace(infoHash))
+
+	if trimmedName := strings.TrimSpace(name); trimmedName != "" {
+		params.Set("dn", trimmedName)
+	}
+
+	for _, tracker := range trackers {
+		trimmedTracker := strings.TrimSpace(tracker)
+		if trimmedTracker == "" {
+			continue
+		}
+		params.Add("tr", trimmedTracker)
+	}
+
+	return "magnet:?" + params.Encode()
+}
+
 // NewSearchPlugin creates a new search plugin
 func NewSearchPlugin() Plugin {
 	return &SearchPlugin{
@@ -648,8 +675,9 @@ func (p *SearchPlugin) parsePirateBayResponse(resp *http.Response, providerName 
 		}
 
 		if infoHash, ok := item["info_hash"].(string); ok {
-			result.InfoHash = infoHash
-			result.MagnetLink = fmt.Sprintf("magnet:?xt=urn:btih:%s", infoHash)
+			cleanHash := strings.TrimSpace(infoHash)
+			result.InfoHash = cleanHash
+			result.MagnetLink = buildMagnetURI(cleanHash, result.Name, defaultMagnetTrackers)
 		}
 
 		if size, ok := item["size"].(string); ok {
